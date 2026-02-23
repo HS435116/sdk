@@ -1,0 +1,2 @@
+APK 打包命令：
+D:\Users\Administrator\sdk\flutter\bin\flutter.bat build apk --release
