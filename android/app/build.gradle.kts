@@ -42,8 +42,10 @@ android {
         jniLibs {
             // 禁用符号裁剪以避免触发 NDK 依赖
             keepDebugSymbols += setOf("**/*.so")
+            pickFirsts += setOf("lib/**/libc++_shared.so")
         }
     }
+
 
 }
 

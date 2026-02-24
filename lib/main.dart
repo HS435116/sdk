@@ -18,7 +18,9 @@ import 'package:html/parser.dart' as html_parser;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart';
+import 'package:flutter_vlc_player/flutter_vlc_player.dart';
 import 'package:google_fonts/google_fonts.dart';
+
 
 
 
@@ -576,7 +578,10 @@ class PlayerPage extends StatefulWidget {
 
 class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   VideoPlayerController? _controller;
+  VlcPlayerController? _vlcController;
+  bool _useVlcPlayer = false;
   bool _loading = true;
+
 
 
   String? _error;
@@ -611,10 +616,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _controller?.dispose();
+    _vlcController?.dispose();
     WakelockPlus.disable();
     _deleteCache();
     super.dispose();
   }
+
 
 
 
@@ -668,6 +675,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
     } catch (e) {
       if (!mounted) return;
+      final fallback = await _tryVlcFallback(playUrl, e);
+      if (fallback) {
+        if (!mounted) return;
+        setState(() {
+          _loading = false;
+          _error = null;
+        });
+        return;
+      }
       final message = e is UnimplementedError
           ? '当前平台暂不支持视频播放，请在安卓设备运行'
           : '播放失败：$e';
@@ -677,13 +693,18 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       });
     }
 
+
+
+
   }
 
 
   Future<void> _playSource(PlaySource source) async {
+    String? playUrl;
     try {
       await _resetPlayer();
-      String? playUrl = source.mediaUrl;
+      playUrl = source.mediaUrl;
+
       final playPageUrl = source.playPageUrl;
       if (playUrl == null && playPageUrl != null && _isValidPlayPageUrl(playPageUrl)) {
         final playResp = await http.get(
@@ -709,6 +730,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
       _currentSource = updated;
 
+      if (_useVlcPlayer) {
+        await _playWithVlc(playUrl);
+        if (!mounted) return;
+        setState(() {
+          _loading = false;
+          _error = null;
+        });
+        return;
+      }
+
       final isHls = playUrl.toLowerCase().contains('.m3u8');
 
       final controller = isHls
@@ -724,8 +755,18 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         _error = null;
       });
 
+
     } catch (e) {
       if (!mounted) return;
+      final fallback = await _tryVlcFallback(playUrl, e);
+      if (fallback) {
+        if (!mounted) return;
+        setState(() {
+          _loading = false;
+          _error = null;
+        });
+        return;
+      }
       final message = e is UnimplementedError
           ? '当前平台暂不支持视频播放，请在安卓设备运行'
           : '播放失败：$e';
@@ -734,6 +775,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         _loading = false;
       });
     }
+
+
+
 
   }
 
@@ -766,7 +810,36 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     return controller;
   }
 
+  bool _shouldFallbackToVlc(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('mediacodec') ||
+        message.contains('videorenderer') ||
+        message.contains('decoder') ||
+        message.contains('videoerror');
+  }
+
+  Future<void> _playWithVlc(String playUrl) async {
+    final url = playUrl;
+    _vlcController?.dispose();
+    _vlcController = VlcPlayerController.network(
+      url,
+      hwAcc: HwAcc.DISABLED,
+      autoPlay: true,
+      options: VlcPlayerOptions(),
+    );
+    _useVlcPlayer = true;
+  }
+
+  Future<bool> _tryVlcFallback(String? playUrl, Object error) async {
+    if (!Platform.isAndroid) return false;
+    if (playUrl == null || playUrl.isEmpty) return false;
+    if (!_shouldFallbackToVlc(error)) return false;
+    await _playWithVlc(playUrl);
+    return true;
+  }
+
   Future<void> _downloadToTempInBackground(String url, CancelToken token) async {
+
     try {
       final dir = await getTemporaryDirectory();
       final safeName = base64Url.encode(utf8.encode(url));
@@ -787,11 +860,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _proxyServer = null;
     _controller?.dispose();
     _controller = null;
+    _vlcController?.dispose();
+    _vlcController = null;
     await _deleteCache();
 
     _cachedFile = null;
     _cacheDir = null;
   }
+
 
 
   void _showSourceSheet() {
@@ -943,6 +1019,19 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   Future<void> _openFullscreen() async {
+    final vlc = _vlcController;
+    if (_useVlcPlayer && vlc != null) {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => _FullscreenVlcPlayerPage(
+            controller: vlc,
+            title: widget.item.title,
+          ),
+        ),
+      );
+      if (mounted) setState(() {});
+      return;
+    }
     final controller = _controller;
     if (controller == null) return;
     await Navigator.of(context).push(
@@ -957,12 +1046,19 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
 
+
   @override
   Widget build(BuildContext context) {
+    final useVlc = _useVlcPlayer && _vlcController != null;
+    final vlcAspect = useVlc && _vlcController!.value.aspectRatio > 0
+        ? _vlcController!.value.aspectRatio
+        : 16 / 9;
+
     return Scaffold(
 
 
       backgroundColor: Colors.black,
+
       appBar: AppBar(
         backgroundColor: Colors.black,
         title: Text(widget.item.title),
@@ -1026,15 +1122,28 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                       padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
                       children: [
                         AspectRatio(
-                          aspectRatio: _controller!.value.aspectRatio,
-                          child: VideoPlayer(_controller!),
+                          aspectRatio: useVlc ? vlcAspect : _controller!.value.aspectRatio,
+                          child: useVlc
+                              ? VlcPlayer(
+                                  controller: _vlcController!,
+                                  aspectRatio: vlcAspect,
+                                  placeholder: const Center(child: CircularProgressIndicator()),
+                                )
+                              : VideoPlayer(_controller!),
                         ),
                         const SizedBox(height: 8),
-                        _PlayerControls(
-                          controller: _controller!,
-                          onToggleFullscreen: _openFullscreen,
-                          isFullscreen: false,
-                        ),
+                        useVlc
+                            ? _VlcControls(
+                                controller: _vlcController!,
+                                onToggleFullscreen: _openFullscreen,
+                                isFullscreen: false,
+                              )
+                            : _PlayerControls(
+                                controller: _controller!,
+                                onToggleFullscreen: _openFullscreen,
+                                isFullscreen: false,
+                              ),
+
 
                         if (_episodes.isNotEmpty) ...[
                           const SizedBox(height: 8),
@@ -1223,8 +1332,274 @@ class _PlayerControls extends StatelessWidget {
   }
 }
 
+class _VlcControls extends StatelessWidget {
+  const _VlcControls({
+    required this.controller,
+    required this.onToggleFullscreen,
+    required this.isFullscreen,
+  });
+
+  final VlcPlayerController controller;
+  final VoidCallback onToggleFullscreen;
+  final bool isFullscreen;
+
+  String _formatDuration(Duration duration) {
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final seconds = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return hours > 0 ? '$hours:$minutes:$seconds' : '$minutes:$seconds';
+  }
+
+  String _formatSpeed(double speed) {
+    final whole = speed % 1 == 0;
+    return whole ? speed.toStringAsFixed(0) : speed.toStringAsFixed(2);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<VlcPlayerValue>(
+      valueListenable: controller,
+      builder: (context, value, _) {
+        if (!value.isInitialized) return const SizedBox.shrink();
+        final duration = value.duration;
+        final position = value.position;
+        final totalMs = duration.inMilliseconds;
+        final posMs = position.inMilliseconds.clamp(0, totalMs);
+        final volume = (value.volume / 100).clamp(0.0, 1.0);
+        final speed = value.playbackSpeed;
+        return Column(
+          children: [
+            SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: 3,
+                activeTrackColor: const Color(0xFFF06292),
+                inactiveTrackColor: Colors.white24,
+                thumbColor: const Color(0xFFF06292),
+                overlayColor: const Color(0x33F06292),
+              ),
+              child: Slider(
+                value: totalMs == 0 ? 0 : posMs.toDouble(),
+                max: totalMs == 0 ? 1 : totalMs.toDouble(),
+                onChanged: totalMs == 0
+                    ? null
+                    : (v) => controller.seekTo(Duration(milliseconds: v.toInt())),
+              ),
+            ),
+            Row(
+              children: [
+                IconButton(
+                  icon: Icon(
+                    value.isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
+                    color: Colors.white,
+                    size: 36,
+                  ),
+                  onPressed: () async {
+                    if (value.isPlaying) {
+                      await controller.pause();
+                    } else {
+                      await controller.play();
+                    }
+                  },
+                ),
+                Text(
+                  '${_formatDuration(position)} / ${_formatDuration(duration)}',
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.replay_10_rounded, color: Colors.white70),
+                  onPressed: () {
+                    final target = position - const Duration(seconds: 10);
+                    controller.seekTo(target < Duration.zero ? Duration.zero : target);
+                  },
+                ),
+                IconButton(
+                  icon: const Icon(Icons.forward_10_rounded, color: Colors.white70),
+                  onPressed: () {
+                    final target = position + const Duration(seconds: 10);
+                    controller.seekTo(target > duration ? duration : target);
+                  },
+                ),
+                IconButton(
+                  icon: Icon(
+                    isFullscreen ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
+                    color: Colors.white70,
+                  ),
+                  onPressed: onToggleFullscreen,
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                PopupMenuButton<double>(
+                  initialValue: speed,
+                  onSelected: (v) => controller.setPlaybackSpeed(v),
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 0.5, child: Text('0.5x')),
+                    PopupMenuItem(value: 0.75, child: Text('0.75x')),
+                    PopupMenuItem(value: 1.0, child: Text('1.0x')),
+                    PopupMenuItem(value: 1.25, child: Text('1.25x')),
+                    PopupMenuItem(value: 1.5, child: Text('1.5x')),
+                    PopupMenuItem(value: 2.0, child: Text('2.0x')),
+                  ],
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF2A2A2A),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFF3A3A3A)),
+                    ),
+                    child: Text(
+                      '${_formatSpeed(speed)}x',
+                      style: const TextStyle(color: Colors.white70, fontSize: 12),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                const Icon(Icons.volume_up_rounded, color: Colors.white70, size: 18),
+                Expanded(
+                  child: SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      trackHeight: 2.5,
+                      activeTrackColor: Colors.white70,
+                      inactiveTrackColor: Colors.white24,
+                      thumbColor: Colors.white,
+                      overlayColor: const Color(0x33FFFFFF),
+                    ),
+                    child: Slider(
+                      value: volume,
+                      min: 0,
+                      max: 1,
+                      onChanged: (v) => controller.setVolume((v * 100).round()),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 48,
+                  child: Text(
+                    '${(volume * 100).round()}%',
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(color: Colors.white60, fontSize: 11),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _FullscreenVlcPlayerPage extends StatefulWidget {
+  const _FullscreenVlcPlayerPage({required this.controller, required this.title});
+
+  final VlcPlayerController controller;
+  final String title;
+
+  @override
+  State<_FullscreenVlcPlayerPage> createState() => _FullscreenVlcPlayerPageState();
+}
+
+class _FullscreenVlcPlayerPageState extends State<_FullscreenVlcPlayerPage> {
+  Timer? _hideTimer;
+  bool _controlsVisible = true;
+
+  @override
+  void initState() {
+    super.initState();
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+    _startHideTimer();
+  }
+
+  @override
+  void dispose() {
+    _hideTimer?.cancel();
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
+    super.dispose();
+  }
+
+  void _startHideTimer() {
+    _hideTimer?.cancel();
+    _hideTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) {
+        setState(() {
+          _controlsVisible = false;
+        });
+      }
+    });
+  }
+
+  void _showControls() {
+    if (!_controlsVisible) {
+      setState(() {
+        _controlsVisible = true;
+      });
+    }
+    _startHideTimer();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final value = widget.controller.value;
+    final aspect = value.aspectRatio > 0 ? value.aspectRatio : 16 / 9;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _showControls,
+        child: SafeArea(
+          child: Stack(
+            children: [
+              Center(
+                child: AspectRatio(
+                  aspectRatio: aspect,
+                  child: VlcPlayer(
+                    controller: widget.controller,
+                    aspectRatio: aspect,
+                    placeholder: const Center(child: CircularProgressIndicator()),
+                  ),
+                ),
+              ),
+              if (_controlsVisible)
+                Positioned(
+                  left: 8,
+                  top: 8,
+                  child: IconButton(
+                    icon: const Icon(Icons.arrow_back, color: Colors.white70),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ),
+              if (_controlsVisible)
+                Positioned(
+                  left: 12,
+                  right: 12,
+                  bottom: 12,
+                  child: _VlcControls(
+                    controller: widget.controller,
+                    onToggleFullscreen: () => Navigator.of(context).pop(),
+                    isFullscreen: true,
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _FullscreenPlayerPage extends StatefulWidget {
   const _FullscreenPlayerPage({required this.controller, required this.title});
+
 
   final VideoPlayerController controller;
   final String title;
