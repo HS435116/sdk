@@ -928,12 +928,25 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     return episodes.first;
   }
 
+  Future<void> _openFullscreen() async {
+    final controller = _controller;
+    if (controller == null) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => _FullscreenPlayerPage(
+          controller: controller,
+          title: widget.item.title,
+        ),
+      ),
+    );
+    if (mounted) setState(() {});
+  }
+
+
   @override
   Widget build(BuildContext context) {
-    final isPlaying = _controller?.value.isPlaying ?? false;
-
-
     return Scaffold(
+
 
       backgroundColor: Colors.black,
       appBar: AppBar(
@@ -995,42 +1008,18 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               : _controller == null
 
                   ? const Center(child: Text('播放器未就绪'))
-                  : Column(
+                  : ListView(
+                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
                       children: [
                         AspectRatio(
                           aspectRatio: _controller!.value.aspectRatio,
                           child: VideoPlayer(_controller!),
                         ),
-                        const SizedBox(height: 12),
-                        VideoProgressIndicator(
-                          _controller!,
-                          allowScrubbing: true,
-                          colors: const VideoProgressColors(
-                            playedColor: Color(0xFFF06292),
-                            bufferedColor: Colors.white24,
-                            backgroundColor: Colors.white12,
-                          ),
-                        ),
-                        const SizedBox(height: 12),
-                        Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            IconButton(
-                              icon: Icon(
-                                isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
-                                color: Colors.white,
-                                size: 48,
-                              ),
-                              onPressed: () async {
-                                if (_controller!.value.isPlaying) {
-                                  await _controller!.pause();
-                                } else {
-                                  await _controller!.play();
-                                }
-                                setState(() {});
-                              },
-                            ),
-                          ],
+                        const SizedBox(height: 8),
+                        _PlayerControls(
+                          controller: _controller!,
+                          onToggleFullscreen: _openFullscreen,
+                          isFullscreen: false,
                         ),
 
                         if (_episodes.isNotEmpty) ...[
@@ -1038,7 +1027,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                           SizedBox(
                             height: 44,
                             child: ListView.separated(
-                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              padding: const EdgeInsets.symmetric(horizontal: 4),
                               scrollDirection: Axis.horizontal,
                               itemBuilder: (context, index) => _episodeChip(_episodes[index]),
                               separatorBuilder: (_, __) => const SizedBox(width: 8),
@@ -1046,22 +1035,254 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                             ),
                           ),
                         ],
-                        const SizedBox(height: 10),
-
-                        const Text(
-                          '© 晨曦微光',
-                          style: TextStyle(color: Colors.white38, fontSize: 12),
-                        ),
                         const SizedBox(height: 8),
+                        const Center(
+                          child: Text(
+                            '© 晨曦微光',
+                            style: TextStyle(color: Colors.white38, fontSize: 12),
+                          ),
+                        ),
                       ],
                     ),
 
+
+    );
+  }
+}
+
+class _PlayerControls extends StatelessWidget {
+  const _PlayerControls({
+    required this.controller,
+    required this.onToggleFullscreen,
+    required this.isFullscreen,
+  });
+
+  final VideoPlayerController controller;
+  final VoidCallback onToggleFullscreen;
+  final bool isFullscreen;
+
+  String _formatDuration(Duration duration) {
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final seconds = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return hours > 0 ? '$hours:$minutes:$seconds' : '$minutes:$seconds';
+  }
+
+  String _formatSpeed(double speed) {
+    final whole = speed % 1 == 0;
+    return whole ? speed.toStringAsFixed(0) : speed.toStringAsFixed(2);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<VideoPlayerValue>(
+      valueListenable: controller,
+      builder: (context, value, _) {
+        if (!value.isInitialized) return const SizedBox.shrink();
+        final duration = value.duration;
+        final position = value.position;
+        final totalMs = duration.inMilliseconds;
+        final posMs = position.inMilliseconds.clamp(0, totalMs);
+        final volume = value.volume.clamp(0.0, 1.0);
+        final speed = value.playbackSpeed;
+        return Column(
+          children: [
+            SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: 3,
+                activeTrackColor: const Color(0xFFF06292),
+                inactiveTrackColor: Colors.white24,
+                thumbColor: const Color(0xFFF06292),
+                overlayColor: const Color(0x33F06292),
+              ),
+              child: Slider(
+                value: totalMs == 0 ? 0 : posMs.toDouble(),
+                max: totalMs == 0 ? 1 : totalMs.toDouble(),
+                onChanged: totalMs == 0
+                    ? null
+                    : (v) => controller.seekTo(Duration(milliseconds: v.toInt())),
+              ),
+            ),
+            Row(
+              children: [
+                IconButton(
+                  icon: Icon(
+                    value.isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
+                    color: Colors.white,
+                    size: 36,
+                  ),
+                  onPressed: () async {
+                    if (value.isPlaying) {
+                      await controller.pause();
+                    } else {
+                      await controller.play();
+                    }
+                  },
+                ),
+                Text(
+                  '${_formatDuration(position)} / ${_formatDuration(duration)}',
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+                const Spacer(),
+                IconButton(
+                  icon: const Icon(Icons.replay_10_rounded, color: Colors.white70),
+                  onPressed: () {
+                    final target = position - const Duration(seconds: 10);
+                    controller.seekTo(target < Duration.zero ? Duration.zero : target);
+                  },
+                ),
+                IconButton(
+                  icon: const Icon(Icons.forward_10_rounded, color: Colors.white70),
+                  onPressed: () {
+                    final target = position + const Duration(seconds: 10);
+                    controller.seekTo(target > duration ? duration : target);
+                  },
+                ),
+                IconButton(
+                  icon: Icon(
+                    isFullscreen ? Icons.fullscreen_exit_rounded : Icons.fullscreen_rounded,
+                    color: Colors.white70,
+                  ),
+                  onPressed: onToggleFullscreen,
+                ),
+              ],
+            ),
+            Row(
+              children: [
+                PopupMenuButton<double>(
+                  initialValue: speed,
+                  onSelected: (v) => controller.setPlaybackSpeed(v),
+                  itemBuilder: (_) => const [
+                    PopupMenuItem(value: 0.5, child: Text('0.5x')),
+                    PopupMenuItem(value: 0.75, child: Text('0.75x')),
+                    PopupMenuItem(value: 1.0, child: Text('1.0x')),
+                    PopupMenuItem(value: 1.25, child: Text('1.25x')),
+                    PopupMenuItem(value: 1.5, child: Text('1.5x')),
+                    PopupMenuItem(value: 2.0, child: Text('2.0x')),
+                  ],
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF2A2A2A),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFF3A3A3A)),
+                    ),
+                    child: Text(
+                      '${_formatSpeed(speed)}x',
+                      style: const TextStyle(color: Colors.white70, fontSize: 12),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                const Icon(Icons.volume_up_rounded, color: Colors.white70, size: 18),
+                Expanded(
+                  child: SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      trackHeight: 2.5,
+                      activeTrackColor: Colors.white70,
+                      inactiveTrackColor: Colors.white24,
+                      thumbColor: Colors.white,
+                      overlayColor: const Color(0x33FFFFFF),
+                    ),
+                    child: Slider(
+                      value: volume,
+                      min: 0,
+                      max: 1,
+                      onChanged: (v) => controller.setVolume(v),
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 48,
+                  child: Text(
+                    '${(volume * 100).round()}%',
+                    textAlign: TextAlign.right,
+                    style: const TextStyle(color: Colors.white60, fontSize: 11),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _FullscreenPlayerPage extends StatefulWidget {
+  const _FullscreenPlayerPage({required this.controller, required this.title});
+
+  final VideoPlayerController controller;
+  final String title;
+
+  @override
+  State<_FullscreenPlayerPage> createState() => _FullscreenPlayerPageState();
+}
+
+class _FullscreenPlayerPageState extends State<_FullscreenPlayerPage> {
+  @override
+  void initState() {
+    super.initState();
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+  }
+
+  @override
+  void dispose() {
+    SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final value = widget.controller.value;
+    final aspect = value.isInitialized && value.aspectRatio > 0 ? value.aspectRatio : 16 / 9;
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: Stack(
+          children: [
+            Center(
+              child: AspectRatio(
+                aspectRatio: aspect,
+                child: VideoPlayer(widget.controller),
+              ),
+            ),
+            Positioned(
+              left: 8,
+              top: 8,
+              child: IconButton(
+                icon: const Icon(Icons.arrow_back, color: Colors.white70),
+                onPressed: () => Navigator.of(context).pop(),
+              ),
+            ),
+            Positioned(
+              left: 12,
+              right: 12,
+              bottom: 12,
+              child: _PlayerControls(
+                controller: widget.controller,
+                onToggleFullscreen: () => Navigator.of(context).pop(),
+                isFullscreen: true,
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }
 
 
 class _CircleAction extends StatelessWidget {
+
   const _CircleAction({required this.icon, required this.onTap});
 
   final IconData icon;
