@@ -1,7 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
 import 'package:cached_network_image/cached_network_image.dart';
+
 import 'package:dio/dio.dart';
 import 'package:dio/io.dart';
 import 'package:flutter/material.dart';
@@ -70,6 +74,9 @@ class HomePage extends StatefulWidget {
 
 class _HomePageState extends State<HomePage> {
   final ScrollController _scrollController = ScrollController();
+  late final bool _isDesktop;
+  double? _debugWidth;
+
   final List<TopTab> _topTabs = const [
     TopTab('电影', 'https://www.jkan.app/show/1-----------.html', '/show/1'),
     TopTab('电视剧', 'https://www.jkan.app/show/2-----------.html', '/show/2'),
@@ -85,8 +92,16 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
+    _isDesktop = _detectDesktop();
+    _debugWidth = _isDesktop ? 420 : null;
     _loadPage(_currentUrl);
+    if (_isDesktop) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _openDebugDialog();
+      });
+    }
   }
+
 
   @override
   void dispose() {
@@ -116,9 +131,33 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
+  bool _detectDesktop() {
+    if (kIsWeb) return true;
+    return Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+  }
+
+  void _openDebugDialog() {
+    showDialog(
+      context: context,
+      builder: (_) {
+        return AlertDialog(
+          title: const Text('桌面调试模式'),
+          content: const Text('当前为桌面运行，将启用模拟移动端宽度。你可以在右侧按钮中随时调整。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('知道了'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final content = _loading
+
         ? const SliverFillRemaining(
             hasScrollBody: false,
             child: Center(child: CircularProgressIndicator()),
@@ -135,35 +174,44 @@ class _HomePageState extends State<HomePage> {
               )
             : _buildContent();
 
-    return Scaffold(
-      body: Stack(
-        children: [
-          SafeArea(
-            child: RefreshIndicator(
-              onRefresh: () => _loadPage(_currentUrl),
-              child: CustomScrollView(
-                controller: _scrollController,
-                slivers: [
-                  SliverToBoxAdapter(child: _buildHeader()),
-                  SliverToBoxAdapter(child: _buildFilters()),
-                  SliverPadding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    sliver: content,
-                  ),
-                  const SliverToBoxAdapter(child: _Footer()),
-                ],
-              ),
+    final page = Stack(
+      children: [
+        SafeArea(
+          child: RefreshIndicator(
+            onRefresh: () => _loadPage(_currentUrl),
+            child: CustomScrollView(
+              controller: _scrollController,
+              slivers: [
+                SliverToBoxAdapter(child: _buildHeader()),
+                SliverToBoxAdapter(child: _buildFilters()),
+                SliverPadding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  sliver: content,
+                ),
+                const SliverToBoxAdapter(child: _Footer()),
+              ],
             ),
           ),
-
-          Positioned(
-            right: 18,
-            bottom: 24,
-            child: _buildFloatingActions(),
-          ),
-        ],
-      ),
+        ),
+        Positioned(
+          right: 18,
+          bottom: 24,
+          child: _buildFloatingActions(),
+        ),
+      ],
     );
+
+    return Scaffold(
+      body: _isDesktop
+          ? Center(
+              child: SizedBox(
+                width: _debugWidth ?? 420,
+                child: page,
+              ),
+            )
+          : page,
+    );
+
   }
 
   Widget _buildHeader() {
@@ -306,6 +354,13 @@ class _HomePageState extends State<HomePage> {
   Widget _buildFloatingActions() {
     return Column(
       children: [
+        if (_isDesktop) ...[
+          _CircleAction(
+            icon: Icons.bug_report_rounded,
+            onTap: _openDebugPanel,
+          ),
+          const SizedBox(height: 12),
+        ],
         _CircleAction(
           icon: Icons.filter_list_rounded,
           onTap: () {
@@ -330,7 +385,57 @@ class _HomePageState extends State<HomePage> {
       ],
     );
   }
+
+  void _openDebugPanel() {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF242424),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) {
+        return Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('模拟调试窗口', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 10,
+                children: [
+                  _debugSizeChip('420px', 420),
+                  _debugSizeChip('480px', 480),
+                  _debugSizeChip('600px', 600),
+                  _debugSizeChip('全宽', null),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text('当前宽度：${_debugWidth == null ? '全宽' : '${_debugWidth!.toInt()}px'}',
+                  style: const TextStyle(color: Colors.white60)),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _debugSizeChip(String label, double? width) {
+    final selected = _debugWidth == width || (width == null && _debugWidth == null);
+    return ChoiceChip(
+      label: Text(label),
+      selected: selected,
+      onSelected: (_) {
+        setState(() {
+          _debugWidth = width;
+        });
+        Navigator.of(context).pop();
+      },
+    );
+  }
 }
+
 
 class _Footer extends StatelessWidget {
   const _Footer();
@@ -469,13 +574,25 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   File? _cachedFile;
   Directory? _cacheDir;
   HlsProxyServer? _proxyServer;
+  List<PlaySource> _sources = [];
+  final Map<String, List<EpisodeItem>> _sourceEpisodes = {};
+  List<EpisodeItem> _episodes = [];
+  EpisodeItem? _currentEpisode;
+  PlaySource? _currentSource;
+
+  late final bool _isDesktop;
+  CancelToken? _downloadCancelToken;
+
+
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _isDesktop = _detectDesktop();
     _initPlayer();
   }
+
 
   @override
   void dispose() {
@@ -485,7 +602,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     super.dispose();
   }
 
+  bool _detectDesktop() {
+    if (kIsWeb) return true;
+    return Platform.isWindows || Platform.isMacOS || Platform.isLinux;
+  }
+
   Future<void> _deleteCache() async {
+
     try {
       await _proxyServer?.close();
       if (_cachedFile != null && await _cachedFile!.exists()) {
@@ -499,56 +622,356 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   Future<void> _initPlayer() async {
     try {
-      final playUrl = await fetchPlayUrl(widget.item.detailUrl);
+      setState(() {
+        _loading = true;
+        _error = null;
+      });
+      final meta = await fetchPlayMeta(widget.item.detailUrl);
+      _sources = meta.sources;
+      _sourceEpisodes
+        ..clear()
+        ..addAll(meta.sourceEpisodes);
+      _episodes = meta.episodes;
+      if (_sources.isEmpty && _episodes.isEmpty) {
+        throw Exception('未解析到播放地址');
+      }
+      if (_episodes.isNotEmpty) {
+        _currentEpisode = _episodes.first;
+        await _playEpisode(_currentEpisode!);
+        return;
+      }
+      final preferred = _sources.firstWhere(
+        (s) => s.mediaUrl != null,
+        orElse: () => _sources.first,
+      );
+      await _playSource(preferred);
+
+    } catch (e) {
+      if (!mounted) return;
+      final message = e is UnimplementedError
+          ? '当前平台暂不支持视频播放，请在安卓设备运行'
+          : '播放失败：$e';
+      setState(() {
+        _error = message;
+        _loading = false;
+      });
+    }
+
+  }
+
+
+  Future<void> _playSource(PlaySource source) async {
+    try {
+      await _resetPlayer();
+      String? playUrl = source.mediaUrl;
+      final playPageUrl = source.playPageUrl;
+      if (playUrl == null && playPageUrl != null && _isValidPlayPageUrl(playPageUrl)) {
+        final playResp = await http.get(Uri.parse(toAbsUrl(playPageUrl)));
+        if (playResp.statusCode == 200) {
+          playUrl = _parsePlayUrlFromHtml(playResp.body);
+        }
+      }
+      if (playUrl != null && !playUrl.startsWith('http')) {
+        playUrl = toAbsUrl(playUrl);
+      }
+
       if (playUrl == null) {
         throw Exception('未解析到播放地址');
       }
-      final isHls = playUrl.toLowerCase().contains('.m3u8');
-      if (isHls) {
-        _proxyServer = await HlsProxyServer.start(playUrl);
-        _cacheDir = _proxyServer!.cacheDir;
-      } else {
-        _cachedFile = await downloadToTemp(playUrl);
+      final updated = source.mediaUrl == playUrl ? source : source.copyWith(mediaUrl: playUrl);
+      final idx = _sources.indexOf(source);
+      if (idx >= 0) {
+        _sources[idx] = updated;
       }
-      final controller = _cachedFile != null
-          ? VideoPlayerController.file(_cachedFile!)
-          : VideoPlayerController.networkUrl(
-              Uri.parse(isHls ? _proxyServer!.indexUrl : playUrl),
-            );
+      _currentSource = updated;
+
+      final isHls = playUrl.toLowerCase().contains('.m3u8');
+      final controller = isHls
+          ? await _prepareHlsController(playUrl)
+          : await _prepareProgressiveController(playUrl);
+
       await controller.initialize();
       await controller.play();
       if (!mounted) return;
       setState(() {
         _controller = controller;
         _loading = false;
+        _error = null;
       });
     } catch (e) {
       if (!mounted) return;
+      final message = e is UnimplementedError
+          ? '当前平台暂不支持视频播放，请在安卓设备运行'
+          : '播放失败：$e';
       setState(() {
-        _error = '播放失败：$e';
+        _error = message;
         _loading = false;
       });
     }
+
+  }
+
+  Future<void> _playEpisode(EpisodeItem episode) async {
+    _currentEpisode = episode;
+    final isMedia = _looksLikeMediaUrl(episode.playUrl);
+    await _playSource(
+      PlaySource(
+        name: _currentSource?.name ?? episode.name,
+        playPageUrl: isMedia ? null : episode.playUrl,
+        mediaUrl: isMedia ? episode.playUrl : null,
+      ),
+    );
+  }
+
+
+  Future<VideoPlayerController> _prepareHlsController(String playUrl) async {
+    _proxyServer = await HlsProxyServer.start(playUrl);
+    _cacheDir = _proxyServer!.cacheDir;
+    return VideoPlayerController.networkUrl(Uri.parse(_proxyServer!.indexUrl));
+  }
+
+  Future<VideoPlayerController> _prepareProgressiveController(String playUrl) async {
+    final controller = VideoPlayerController.networkUrl(Uri.parse(playUrl));
+    _downloadCancelToken = CancelToken();
+    unawaited(_downloadToTempInBackground(playUrl, _downloadCancelToken!));
+    return controller;
+  }
+
+  Future<void> _downloadToTempInBackground(String url, CancelToken token) async {
+    try {
+      final dir = await getTemporaryDirectory();
+      final safeName = base64Url.encode(utf8.encode(url));
+      final file = File('${dir.path}/cache_$safeName');
+      _cachedFile = file;
+      if (await file.exists()) return;
+      final dio = createDio();
+      await dio.download(url, file.path, cancelToken: token);
+    } catch (_) {}
+  }
+
+
+  Future<void> _resetPlayer() async {
+    try {
+      await _proxyServer?.close();
+    } catch (_) {}
+    _proxyServer = null;
+    _controller?.dispose();
+    _controller = null;
+    await _deleteCache();
+    _cachedFile = null;
+    _cacheDir = null;
+  }
+
+  void _showSourceSheet() {
+    if (_sources.isEmpty && _episodes.isEmpty) return;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF242424),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) {
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.6,
+          minChildSize: 0.4,
+          maxChildSize: 0.9,
+          builder: (context, scrollController) {
+            return ListView(
+              controller: scrollController,
+              padding: const EdgeInsets.all(16),
+              children: [
+                const Text('切换视频源', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 12),
+                if (_sources.isNotEmpty) ..._sources.map(_sourceTile),
+                if (_episodes.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  const Text('选集', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: _episodes.map(_episodeChip).toList(),
+                  ),
+                ],
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+
+  void _openPlayerDebugPanel() {
+    if (!_isDesktop) return;
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF242424),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (_) {
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.6,
+          minChildSize: 0.4,
+          maxChildSize: 0.9,
+          builder: (context, scrollController) {
+            return ListView(
+              controller: scrollController,
+              padding: const EdgeInsets.all(16),
+              children: [
+                const Text('播放调试面板', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 12),
+                const Text('切换视频源', style: TextStyle(color: Colors.white70)),
+                const SizedBox(height: 8),
+                if (_sources.isNotEmpty) ..._sources.map(_sourceTile),
+                if (_episodes.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  const Text('选集', style: TextStyle(color: Colors.white70)),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: _episodes.map(_episodeChip).toList(),
+                  ),
+                ],
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+
+  Widget _sourceTile(PlaySource source) {
+    final selected = identical(source, _currentSource) ||
+        (_currentSource?.name == source.name && _currentSource?.playPageUrl == source.playPageUrl);
+    final episodes = _sourceEpisodes[source.name];
+    final subtitleText = source.mediaUrl != null
+        ? source.mediaUrl!
+        : (episodes != null && episodes.isNotEmpty)
+            ? '共${episodes.length}集'
+            : '待解析';
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Icon(selected ? Icons.check_circle : Icons.play_circle_outline, color: Colors.white70),
+      title: Text(source.name, style: const TextStyle(color: Colors.white)),
+      subtitle: Text(subtitleText, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: Colors.white38)),
+      onTap: () async {
+        Navigator.of(context).pop();
+        setState(() {
+          _loading = true;
+          _error = null;
+        });
+        if (episodes != null && episodes.isNotEmpty) {
+          setState(() {
+            _episodes = episodes;
+            _currentSource = source;
+          });
+          final next = _pickEpisodeForSource(episodes);
+          _currentEpisode = next;
+          await _playEpisode(next);
+          return;
+        }
+        await _playSource(source);
+      },
+    );
+  }
+
+
+  Widget _episodeChip(EpisodeItem episode) {
+    final selected = _currentEpisode?.playUrl == episode.playUrl;
+    return ChoiceChip(
+      label: Text(episode.name),
+      selected: selected,
+      onSelected: (_) {
+        setState(() {
+          _loading = true;
+          _error = null;
+        });
+        _playEpisode(episode);
+      },
+    );
+  }
+
+  EpisodeItem _pickEpisodeForSource(List<EpisodeItem> episodes) {
+    final current = _currentEpisode;
+    if (current != null) {
+      final byName = episodes.indexWhere((e) => e.name == current.name);
+      if (byName >= 0) return episodes[byName];
+      final byUrl = episodes.indexWhere((e) => e.playUrl == current.playUrl);
+      if (byUrl >= 0) return episodes[byUrl];
+    }
+    return episodes.first;
   }
 
   @override
   Widget build(BuildContext context) {
+
+
     return Scaffold(
       backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: Colors.black,
         title: Text(widget.item.title),
+        actions: [
+          IconButton(
+            tooltip: '切换视频源',
+            onPressed: _showSourceSheet,
+            icon: const Icon(Icons.swap_horiz_rounded),
+          ),
+          if (_isDesktop)
+            IconButton(
+              tooltip: '调试面板',
+              onPressed: _openPlayerDebugPanel,
+              icon: const Icon(Icons.bug_report_rounded),
+            ),
+        ],
       ),
+
       body: _loading
           ? const Center(child: CircularProgressIndicator())
           : _error != null
               ? Center(
-                  child: Text(
-                    _error!,
-                    style: const TextStyle(color: Colors.redAccent),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        _error!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.redAccent),
+                      ),
+                      const SizedBox(height: 12),
+                      ElevatedButton.icon(
+                        onPressed: () {
+                          _controller?.dispose();
+                          _controller = null;
+                          setState(() {
+                            _loading = true;
+                            _error = null;
+                          });
+                          _initPlayer();
+                        },
+                        icon: const Icon(Icons.refresh_rounded),
+                        label: const Text('重试'),
+                      ),
+                      const SizedBox(height: 10),
+                      OutlinedButton.icon(
+                        onPressed: _showSourceSheet,
+                        icon: const Icon(Icons.swap_horiz_rounded),
+                        label: const Text('切换视频源'),
+                      ),
+
+                    ],
                   ),
                 )
               : _controller == null
+
                   ? const Center(child: Text('播放器未就绪'))
                   : Column(
                       children: [
@@ -589,7 +1012,21 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                             ),
                           ],
                         ),
+                        if (_episodes.isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          SizedBox(
+                            height: 44,
+                            child: ListView.separated(
+                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              scrollDirection: Axis.horizontal,
+                              itemBuilder: (context, index) => _episodeChip(_episodes[index]),
+                              separatorBuilder: (_, __) => const SizedBox(width: 8),
+                              itemCount: _episodes.length,
+                            ),
+                          ),
+                        ],
                         const SizedBox(height: 10),
+
                         const Text(
                           '© 晨曦微光',
                           style: TextStyle(color: Colors.white38, fontSize: 12),
@@ -668,6 +1105,52 @@ class VideoItem {
   final String badge;
 }
 
+class PlaySource {
+  PlaySource({
+    required this.name,
+    this.playPageUrl,
+    this.mediaUrl,
+  });
+
+  final String name;
+  final String? playPageUrl;
+  final String? mediaUrl;
+
+  PlaySource copyWith({String? mediaUrl}) {
+    return PlaySource(
+      name: name,
+      playPageUrl: playPageUrl,
+      mediaUrl: mediaUrl ?? this.mediaUrl,
+    );
+  }
+}
+
+class EpisodeItem {
+  EpisodeItem({required this.name, required this.playUrl});
+  final String name;
+  final String playUrl;
+}
+
+class PlayMeta {
+  PlayMeta({required this.sources, required this.episodes, required this.sourceEpisodes});
+  final List<PlaySource> sources;
+  final List<EpisodeItem> episodes;
+  final Map<String, List<EpisodeItem>> sourceEpisodes;
+}
+
+class _SourceEpisodeBundle {
+  _SourceEpisodeBundle({required this.sources, required this.sourceEpisodes, required this.activeIndex});
+  final List<PlaySource> sources;
+  final Map<String, List<EpisodeItem>> sourceEpisodes;
+  final int activeIndex;
+}
+
+
+
+
+
+
+
 Future<PageData> fetchPage(String url) async {
   final resp = await http.get(Uri.parse(url));
   if (resp.statusCode != 200) {
@@ -727,10 +1210,57 @@ String toAbsUrl(String url) {
   return '$kBaseHost$url';
 }
 
-Future<String?> fetchPlayUrl(String detailUrl) async {
-  final resp = await http.get(Uri.parse(detailUrl));
-  if (resp.statusCode != 200) return null;
-  final html = resp.body;
+Future<PlayMeta> fetchPlayMeta(String detailUrl) async {
+  final detailResp = await http.get(Uri.parse(detailUrl));
+  if (detailResp.statusCode != 200) {
+    return PlayMeta(sources: [], episodes: [], sourceEpisodes: {});
+  }
+  final detailHtml = detailResp.body;
+
+  final sources = <PlaySource>[];
+  final direct = _parsePlayUrlFromHtml(detailHtml);
+  if (direct != null) {
+    sources.add(PlaySource(name: '默认线路', mediaUrl: direct));
+  }
+
+  final doc = html_parser.parse(detailHtml);
+  final bundle = _parseSourceEpisodes(doc);
+  final sourceEpisodes = <String, List<EpisodeItem>>{}..addAll(bundle.sourceEpisodes);
+
+  for (final link in bundle.sources) {
+    final exists = sources.indexWhere((s) => s.name == link.name && s.playPageUrl == link.playPageUrl) >= 0;
+    if (!exists) sources.add(link);
+  }
+
+  if (sources.isEmpty) {
+    final playLinks = _findPlayPageUrls(doc);
+    for (final link in playLinks) {
+      if (sources.indexWhere((s) => s.playPageUrl == link.playPageUrl) >= 0) continue;
+      sources.add(link);
+    }
+  }
+
+  List<EpisodeItem> episodes = [];
+  if (bundle.sources.isNotEmpty) {
+    final activeName = bundle.sources[bundle.activeIndex.clamp(0, bundle.sources.length - 1)].name;
+    episodes = sourceEpisodes[activeName] ?? [];
+  }
+  if (episodes.isEmpty) {
+    episodes = _extractEpisodes(doc);
+    if (episodes.isNotEmpty && sourceEpisodes.isEmpty) {
+      sourceEpisodes['默认线路'] = episodes;
+      if (sources.indexWhere((s) => s.name == '默认线路') < 0) {
+        sources.add(PlaySource(name: '默认线路'));
+      }
+    }
+  }
+
+  return PlayMeta(sources: sources, episodes: episodes, sourceEpisodes: sourceEpisodes);
+}
+
+
+
+String? _parsePlayUrlFromHtml(String html) {
   final playerMatch = RegExp(r'player_data\s*=\s*(\{.*?\})\s*;', dotAll: true).firstMatch(html);
   if (playerMatch != null) {
     final obj = playerMatch.group(1)!;
@@ -742,32 +1272,308 @@ Future<String?> fetchPlayUrl(String detailUrl) async {
     }
   }
 
-  final videoMatch = RegExp(r'''https?:\/\/[^\s"']+\.(m3u8|mp4|mkv|flv|mov)''', caseSensitive: false).firstMatch(html);
+  final urlField = RegExp(r'''["']url["']\s*:\s*["']([^"']+)["']''').firstMatch(html);
+  if (urlField != null) {
+    final url = urlField.group(1)!;
+    final encrypt = RegExp(r'''["']encrypt["']\s*:\s*["']?(\d+)''').firstMatch(html)?.group(1);
+    final decoded = _decodeUrl(url, encrypt);
+    if (decoded != null) return decoded;
+  }
 
+  final attrField = RegExp(r'''(?:data-url|data-src|data-play)\s*=\s*["']([^"']+)["']''', caseSensitive: false).firstMatch(html);
+  if (attrField != null) {
+    final url = attrField.group(1)!;
+    final decoded = _decodeUrl(url, null);
+    if (decoded != null) return decoded;
+  }
+
+  final videoMatch = RegExp(r'''https?:\/\/[^\s"']+\.(m3u8|mp4|mkv|flv|mov)''', caseSensitive: false).firstMatch(html);
   if (videoMatch != null) return videoMatch.group(0);
 
   return null;
 }
 
+List<PlaySource> _findPlayPageUrls(dom.Document doc) {
+  final results = <PlaySource>[];
+  final selectors = [
+    'a[href*="/play/"]',
+    'a[href*="/player/"]',
+    'a.play',
+    'a.btn_play',
+  ];
+  for (final selector in selectors) {
+    final links = doc.querySelectorAll(selector);
+    for (final link in links) {
+      final href = link.attributes['href'];
+      if (href == null || href.isEmpty) continue;
+      final title = link.text.trim().isNotEmpty
+          ? link.text.trim()
+          : (link.attributes['title'] ?? link.attributes['data-name'] ?? '线路');
+      results.add(PlaySource(name: title, playPageUrl: toAbsUrl(href)));
+    }
+  }
+
+  const attrs = ['data-play', 'data-url', 'data-href'];
+  for (final attr in attrs) {
+    final els = doc.querySelectorAll('[$attr]');
+    for (final el in els) {
+      final val = el.attributes[attr];
+      if (val == null || val.isEmpty) continue;
+      final title = el.attributes['data-name'] ?? el.attributes['title'] ?? '线路';
+      results.add(PlaySource(name: title, playPageUrl: toAbsUrl(val)));
+    }
+  }
+  return results;
+}
+
+String? _findPlayPageUrl(dom.Document doc) {
+  final list = _findPlayPageUrls(doc);
+  return list.isEmpty ? null : list.first.playPageUrl;
+}
+
+List<EpisodeItem> _extractEpisodes(dom.Document doc) {
+  const containerSelectors = [
+    '.playlist',
+    '.play_list',
+    '.play-list',
+    '.playerlist',
+    '.play-num',
+    '.playNum',
+    '.episode_list',
+    '.playlists',
+    '#playlist',
+    '.play_list_box',
+    '.play-episode',
+  ];
+  final containers = <dom.Element>[];
+  for (final selector in containerSelectors) {
+    containers.addAll(doc.querySelectorAll(selector));
+  }
+  for (final container in containers) {
+    final eps = _extractEpisodesFromContainer(container);
+    if (eps.isNotEmpty) return eps;
+  }
+
+  final results = <EpisodeItem>[];
+  final seen = <String>{};
+  final candidates = doc.querySelectorAll('a');
+  for (final link in candidates) {
+    final raw = _extractPlayLink(link);
+    if (raw == null) continue;
+    if (!_isPlayableLink(raw)) continue;
+    final url = _normalizePlayUrl(raw);
+    if (seen.contains(url)) continue;
+    final name = _extractEpisodeName(link);
+    if (name == null || name.isEmpty) continue;
+    seen.add(url);
+    results.add(EpisodeItem(name: name, playUrl: url));
+  }
+  return results;
+}
+
+
+
+
+
+
+
+_SourceEpisodeBundle _parseSourceEpisodes(dom.Document doc) {
+  const tabSelectors = [
+    '.play_source li',
+    '.play_source a',
+    '.play_source_box li',
+    '.play_source_box a',
+    '.play_source_list li',
+    '.play_source_list a',
+    '.vod_play_tab li',
+    '.vod_play_tab a',
+    '.play-source li',
+    '.play-source a',
+  ];
+  final tabElements = <dom.Element>[];
+  for (final selector in tabSelectors) {
+    tabElements.addAll(doc.querySelectorAll(selector));
+  }
+
+  final sources = <PlaySource>[];
+  final seenNames = <String>{};
+  var activeIndex = 0;
+  for (final el in tabElements) {
+    final node = el.querySelector('a') ?? el;
+    final name = node.text.trim().isNotEmpty
+        ? node.text.trim()
+        : (node.attributes['title'] ?? node.attributes['data-name'] ?? '');
+    if (name.isEmpty || seenNames.contains(name)) continue;
+    final raw = _extractPlayLink(node) ?? _extractPlayLink(el);
+    final playUrl = raw != null && _isPlayableLink(raw) ? _normalizePlayUrl(raw) : null;
+    sources.add(PlaySource(name: name, playPageUrl: playUrl));
+    seenNames.add(name);
+    final classSet = <String>{...el.classes, ...node.classes};
+    if (classSet.contains('active') || classSet.contains('on') || classSet.contains('hl') || classSet.contains('current')) {
+      activeIndex = sources.length - 1;
+    }
+  }
+
+  const playlistSelectors = [
+    '.playlist',
+    '.play_list',
+    '.play-list',
+    '.playerlist',
+    '.play-num',
+    '.playNum',
+    '.episode_list',
+    '.playlists',
+    '#playlist',
+    '.play_list_box',
+    '.play-episode',
+  ];
+  final playlists = <dom.Element>[];
+  for (final selector in playlistSelectors) {
+    playlists.addAll(doc.querySelectorAll(selector));
+  }
+
+  final sourceEpisodes = <String, List<EpisodeItem>>{};
+  if (playlists.isNotEmpty) {
+    if (sources.isEmpty) {
+      final eps = _extractEpisodesFromContainer(playlists.first);
+      if (eps.isNotEmpty) {
+        sources.add(PlaySource(name: '默认线路'));
+        sourceEpisodes['默认线路'] = eps;
+        activeIndex = 0;
+      }
+    } else {
+      final count = playlists.length < sources.length ? playlists.length : sources.length;
+      for (var i = 0; i < count; i++) {
+        final eps = _extractEpisodesFromContainer(playlists[i]);
+        if (eps.isNotEmpty) {
+          sourceEpisodes[sources[i].name] = eps;
+        }
+      }
+    }
+  }
+
+  return _SourceEpisodeBundle(sources: sources, sourceEpisodes: sourceEpisodes, activeIndex: activeIndex);
+}
+
+List<EpisodeItem> _extractEpisodesFromContainer(dom.Element container) {
+  final results = <EpisodeItem>[];
+  final seen = <String>{};
+  final links = container.querySelectorAll('a');
+  for (final link in links) {
+    final raw = _extractPlayLink(link);
+    if (raw == null || !_isPlayableLink(raw)) continue;
+    final url = _normalizePlayUrl(raw);
+    if (seen.contains(url)) continue;
+    final name = _extractEpisodeName(link);
+    if (name == null || name.isEmpty) continue;
+    if (name.contains('立即播放') && name.length <= 4) continue;
+    seen.add(url);
+    results.add(EpisodeItem(name: name, playUrl: url));
+  }
+  return results;
+}
+
+String? _extractPlayLink(dom.Element el) {
+  const keys = ['data-url', 'data-play', 'data-href', 'data-src', 'href'];
+  for (final key in keys) {
+    final val = el.attributes[key];
+    if (val == null || val.isEmpty) continue;
+    final lower = val.toLowerCase().trim();
+    if (lower == '#' || lower.startsWith('javascript') || lower.startsWith('void(')) {
+      continue;
+    }
+    return val;
+  }
+  return null;
+}
+
+String? _extractEpisodeName(dom.Element el) {
+  final text = el.text.trim();
+  if (text.isNotEmpty) return text;
+  final name = el.attributes['title'] ?? el.attributes['data-name'] ?? el.attributes['data-title'];
+  return name?.trim();
+}
+
+String _normalizePlayUrl(String url) {
+  final trimmed = url.trim();
+  final decoded = _tryDecodePercent(trimmed);
+  if (decoded.startsWith('http') || decoded.startsWith('//') || decoded.startsWith('/')) {
+    return toAbsUrl(decoded);
+  }
+  return toAbsUrl(decoded);
+}
+
+bool _isPlayableLink(String url) {
+  final lower = url.toLowerCase();
+  return _looksLikeMediaUrl(lower) || lower.contains('/play/') || lower.contains('/player/');
+}
+
+bool _looksLikeMediaUrl(String url) {
+  final lower = url.toLowerCase();
+  return lower.contains('.m3u8') ||
+      lower.contains('.mp4') ||
+      lower.contains('.mkv') ||
+      lower.contains('.flv') ||
+      lower.contains('.mov') ||
+      lower.contains('.avi') ||
+      lower.contains('.m4v') ||
+      lower.contains('.webm');
+}
+
+bool _isValidPlayPageUrl(String url) {
+  final lower = url.trim().toLowerCase();
+  if (lower.isEmpty) return false;
+  if (lower == '#' || lower.startsWith('javascript') || lower.startsWith('void(')) return false;
+  return true;
+}
+
+
 String? _extractField(String obj, String field) {
+
   final match = RegExp('"$field"\\s*:\\s*"(.*?)"|\'$field\'\\s*:\\s*\'(.*?)\'').firstMatch(obj);
   return match?.group(1) ?? match?.group(2);
 }
 
 String? _decodeUrl(String url, String? encrypt) {
   var value = url.replaceAll('\\/', '/');
+  value = _tryDecodePercent(value);
+
   if (encrypt == '1') {
-    value = Uri.decodeFull(value);
+    value = _tryDecodePercent(value);
   } else if (encrypt == '2') {
     try {
       value = utf8.decode(base64.decode(value));
+      value = _tryDecodePercent(value);
     } catch (_) {
       return null;
     }
   }
+
+  value = value.trim();
+  final idx = value.indexOf('http');
+  if (idx != -1) {
+    value = value.substring(idx);
+  }
+  if (value.startsWith('//')) {
+    value = 'https:$value';
+  }
   if (value.startsWith('http')) return value;
   return toAbsUrl(value);
 }
+
+String _tryDecodePercent(String input) {
+  var out = input;
+  for (var i = 0; i < 2; i++) {
+    if (!out.contains('%')) break;
+    try {
+      out = Uri.decodeFull(out);
+    } catch (_) {
+      break;
+    }
+  }
+  return out;
+}
+
 
 Future<File> downloadToTemp(String url) async {
   final dir = await getTemporaryDirectory();
