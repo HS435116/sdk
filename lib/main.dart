@@ -11,7 +11,9 @@ import 'package:dio/io.dart';
 import 'package:flutter/material.dart';
 
 import 'package:flutter/services.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:html/dom.dart' as dom;
+
 import 'package:html/parser.dart' as html_parser;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -597,8 +599,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _isDesktop = _detectDesktop();
+    WakelockPlus.enable();
     _initPlayer();
   }
+
 
 
 
@@ -607,9 +611,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _controller?.dispose();
+    WakelockPlus.disable();
     _deleteCache();
     super.dispose();
   }
+
 
 
 
@@ -1228,6 +1234,9 @@ class _FullscreenPlayerPage extends StatefulWidget {
 }
 
 class _FullscreenPlayerPageState extends State<_FullscreenPlayerPage> {
+  Timer? _hideTimer;
+  bool _controlsVisible = true;
+
   @override
   void initState() {
     super.initState();
@@ -1236,10 +1245,12 @@ class _FullscreenPlayerPageState extends State<_FullscreenPlayerPage> {
       DeviceOrientation.landscapeLeft,
       DeviceOrientation.landscapeRight,
     ]);
+    _startHideTimer();
   }
 
   @override
   void dispose() {
+    _hideTimer?.cancel();
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,
@@ -1248,45 +1259,72 @@ class _FullscreenPlayerPageState extends State<_FullscreenPlayerPage> {
     super.dispose();
   }
 
+  void _startHideTimer() {
+    _hideTimer?.cancel();
+    _hideTimer = Timer(const Duration(seconds: 3), () {
+      if (mounted) {
+        setState(() {
+          _controlsVisible = false;
+        });
+      }
+    });
+  }
+
+  void _showControls() {
+    if (!_controlsVisible) {
+      setState(() {
+        _controlsVisible = true;
+      });
+    }
+    _startHideTimer();
+  }
+
   @override
   Widget build(BuildContext context) {
     final value = widget.controller.value;
     final aspect = value.isInitialized && value.aspectRatio > 0 ? value.aspectRatio : 16 / 9;
     return Scaffold(
       backgroundColor: Colors.black,
-      body: SafeArea(
-        child: Stack(
-          children: [
-            Center(
-              child: AspectRatio(
-                aspectRatio: aspect,
-                child: VideoPlayer(widget.controller),
+      body: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _showControls,
+        child: SafeArea(
+          child: Stack(
+            children: [
+              Center(
+                child: AspectRatio(
+                  aspectRatio: aspect,
+                  child: VideoPlayer(widget.controller),
+                ),
               ),
-            ),
-            Positioned(
-              left: 8,
-              top: 8,
-              child: IconButton(
-                icon: const Icon(Icons.arrow_back, color: Colors.white70),
-                onPressed: () => Navigator.of(context).pop(),
-              ),
-            ),
-            Positioned(
-              left: 12,
-              right: 12,
-              bottom: 12,
-              child: _PlayerControls(
-                controller: widget.controller,
-                onToggleFullscreen: () => Navigator.of(context).pop(),
-                isFullscreen: true,
-              ),
-            ),
-          ],
+              if (_controlsVisible)
+                Positioned(
+                  left: 8,
+                  top: 8,
+                  child: IconButton(
+                    icon: const Icon(Icons.arrow_back, color: Colors.white70),
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
+                ),
+              if (_controlsVisible)
+                Positioned(
+                  left: 12,
+                  right: 12,
+                  bottom: 12,
+                  child: _PlayerControls(
+                    controller: widget.controller,
+                    onToggleFullscreen: () => Navigator.of(context).pop(),
+                    isFullscreen: true,
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );
   }
 }
+
 
 
 class _CircleAction extends StatelessWidget {
