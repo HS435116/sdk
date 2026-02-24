@@ -451,7 +451,7 @@ class _Footer extends StatelessWidget {
       padding: const EdgeInsets.fromLTRB(16, 18, 16, 26),
       child: Center(
         child: Text(
-          '2026 © 晨曦微光',
+          ' 2026 © 晨曦微光 ',
           style: TextStyle(color: Colors.white38, fontSize: 12),
         ),
       ),
