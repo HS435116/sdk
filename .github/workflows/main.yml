@@ -31,20 +31,18 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install Android cmdline-tools
-        shell: bash
+        shell: pwsh
         run: |
-          mkdir -p "${ANDROID_SDK_ROOT}/cmdline-tools"
-          curl -sSL https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip -o cmdline-tools.zip
-          unzip -q cmdline-tools.zip -d "${ANDROID_SDK_ROOT}/cmdline-tools"
-          mv "${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools" "${ANDROID_SDK_ROOT}/cmdline-tools/latest"
-
-      - name: Add sdkmanager to PATH
-        shell: bash
-        run: echo "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          New-Item -ItemType Directory -Force -Path "$env:ANDROID_SDK_ROOT\cmdline-tools" | Out-Null
+          Invoke-WebRequest -Uri https://dl.google.com/android/repository/commandlinetools-win-11076708_latest.zip -OutFile cmdline-tools.zip
+          Expand-Archive -Path cmdline-tools.zip -DestinationPath "$env:ANDROID_SDK_ROOT\cmdline-tools" -Force
+          if (Test-Path "$env:ANDROID_SDK_ROOT\cmdline-tools\latest") { Remove-Item -Recurse -Force "$env:ANDROID_SDK_ROOT\cmdline-tools\latest" }
+          Rename-Item "$env:ANDROID_SDK_ROOT\cmdline-tools\cmdline-tools" latest
 
       - name: Accept Android Licenses
-        shell: bash
-        run: yes | "${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager" --licenses
+        shell: pwsh
+        run: |
+          1..100 | ForEach-Object { 'y' } | & "$env:ANDROID_SDK_ROOT\cmdline-tools\latest\bin\sdkmanager.bat" --licenses
 
       - name: Build Release APK
         run: flutter build apk --release
