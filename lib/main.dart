@@ -16,7 +16,10 @@ import 'package:html/parser.dart' as html_parser;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 import 'package:google_fonts/google_fonts.dart';
+
 
 const String kBaseHost = 'https://www.jkan.app';
 const String kDefaultListUrl = 'https://www.jkan.app/show/1--------1---.html';
@@ -33,7 +36,9 @@ class _TrustAllHttpOverrides extends HttpOverrides {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
   HttpOverrides.global = _TrustAllHttpOverrides();
+
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
 
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
@@ -569,7 +574,10 @@ class PlayerPage extends StatefulWidget {
 
 class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   VideoPlayerController? _controller;
+  Player? _desktopPlayer;
+  VideoController? _desktopVideoController;
   bool _loading = true;
+
   String? _error;
   File? _cachedFile;
   Directory? _cacheDir;
@@ -590,17 +598,25 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _isDesktop = _detectDesktop();
+    if (_isDesktop) {
+      _initDesktopPlayer();
+    }
     _initPlayer();
   }
+
 
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _controller?.dispose();
+    _desktopPlayer?.dispose();
+    _desktopPlayer = null;
+    _desktopVideoController = null;
     _deleteCache();
     super.dispose();
   }
+
 
   bool _detectDesktop() {
     if (kIsWeb) return true;
@@ -620,7 +636,24 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
+  void _initDesktopPlayer() {
+    _desktopPlayer ??= Player();
+    _desktopVideoController ??= VideoController(_desktopPlayer!);
+  }
+
+  Future<void> _playOnDesktop(String playUrl) async {
+    _initDesktopPlayer();
+    var url = playUrl;
+    if (playUrl.toLowerCase().contains('.m3u8')) {
+      _proxyServer = await HlsProxyServer.start(playUrl);
+      _cacheDir = _proxyServer!.cacheDir;
+      url = _proxyServer!.indexUrl;
+    }
+    await _desktopPlayer!.open(Media(url), play: true);
+  }
+
   Future<void> _initPlayer() async {
+
     try {
       setState(() {
         _loading = true;
@@ -685,6 +718,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
       _currentSource = updated;
 
+      if (_isDesktop) {
+        await _playOnDesktop(playUrl);
+        if (!mounted) return;
+        setState(() {
+          _loading = false;
+          _error = null;
+        });
+        return;
+      }
+
       final isHls = playUrl.toLowerCase().contains('.m3u8');
       final controller = isHls
           ? await _prepareHlsController(playUrl)
@@ -698,6 +741,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         _loading = false;
         _error = null;
       });
+
     } catch (e) {
       if (!mounted) return;
       final message = e is UnimplementedError
@@ -757,10 +801,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _proxyServer = null;
     _controller?.dispose();
     _controller = null;
+    try {
+      await _desktopPlayer?.stop();
+    } catch (_) {}
     await _deleteCache();
     _cachedFile = null;
     _cacheDir = null;
   }
+
 
   void _showSourceSheet() {
     if (_sources.isEmpty && _episodes.isEmpty) return;
@@ -912,9 +960,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-
+    final isPlaying = _isDesktop
+        ? (_desktopPlayer?.state.playing ?? false)
+        : (_controller?.value.isPlaying ?? false);
 
     return Scaffold(
+
       backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: Colors.black,
@@ -949,8 +1000,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                       const SizedBox(height: 12),
                       ElevatedButton.icon(
                         onPressed: () {
-                          _controller?.dispose();
-                          _controller = null;
+                          if (_isDesktop) {
+                            _desktopPlayer?.stop();
+                          } else {
+                            _controller?.dispose();
+                            _controller = null;
+                          }
                           setState(() {
                             _loading = true;
                             _error = null;
@@ -960,6 +1015,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                         icon: const Icon(Icons.refresh_rounded),
                         label: const Text('重试'),
                       ),
+
                       const SizedBox(height: 10),
                       OutlinedButton.icon(
                         onPressed: _showSourceSheet,
@@ -970,42 +1026,51 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                     ],
                   ),
                 )
-              : _controller == null
+              : (_isDesktop ? _desktopVideoController == null : _controller == null)
 
                   ? const Center(child: Text('播放器未就绪'))
                   : Column(
                       children: [
                         AspectRatio(
-                          aspectRatio: _controller!.value.aspectRatio,
-                          child: VideoPlayer(_controller!),
+                          aspectRatio: _isDesktop ? 16 / 9 : _controller!.value.aspectRatio,
+                          child: _isDesktop
+                              ? Video(controller: _desktopVideoController!)
+                              : VideoPlayer(_controller!),
                         ),
                         const SizedBox(height: 12),
-                        VideoProgressIndicator(
-                          _controller!,
-                          allowScrubbing: true,
-                          colors: const VideoProgressColors(
-                            playedColor: Color(0xFFF06292),
-                            bufferedColor: Colors.white24,
-                            backgroundColor: Colors.white12,
+                        if (!_isDesktop)
+                          VideoProgressIndicator(
+                            _controller!,
+                            allowScrubbing: true,
+                            colors: const VideoProgressColors(
+                              playedColor: Color(0xFFF06292),
+                              bufferedColor: Colors.white24,
+                              backgroundColor: Colors.white12,
+                            ),
                           ),
-                        ),
-                        const SizedBox(height: 12),
+                        if (!_isDesktop) const SizedBox(height: 12),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             IconButton(
                               icon: Icon(
-                                _controller!.value.isPlaying
-                                    ? Icons.pause_circle_filled
-                                    : Icons.play_circle_fill,
+                                isPlaying ? Icons.pause_circle_filled : Icons.play_circle_fill,
                                 color: Colors.white,
                                 size: 48,
                               ),
                               onPressed: () async {
-                                if (_controller!.value.isPlaying) {
-                                  await _controller!.pause();
+                                if (_isDesktop) {
+                                  if (isPlaying) {
+                                    await _desktopPlayer?.pause();
+                                  } else {
+                                    await _desktopPlayer?.play();
+                                  }
                                 } else {
-                                  await _controller!.play();
+                                  if (_controller!.value.isPlaying) {
+                                    await _controller!.pause();
+                                  } else {
+                                    await _controller!.play();
+                                  }
                                 }
                                 setState(() {});
                               },
@@ -1034,6 +1099,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                         const SizedBox(height: 8),
                       ],
                     ),
+
     );
   }
 }

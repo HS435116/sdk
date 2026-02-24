@@ -1,2 +1,10 @@
 APK 打包命令：
 D:\Users\Administrator\sdk\flutter\bin\flutter.bat build apk --release
+
+有冲突的处理，先拉再推：
+git pull --rebase
+git push
+请提交并重新触发工作流：
+git add lib/main.dart
+git commit -m "fix regex raw string"
+git push
