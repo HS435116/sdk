@@ -3,7 +3,9 @@ import 'dart:io';
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:dio/dio.dart';
+import 'package:dio/io.dart';
 import 'package:flutter/material.dart';
+
 import 'package:flutter/services.dart';
 import 'package:html/dom.dart' as dom;
 import 'package:html/parser.dart' as html_parser;
@@ -15,9 +17,21 @@ import 'package:google_fonts/google_fonts.dart';
 const String kBaseHost = 'https://www.jkan.app';
 const String kDefaultListUrl = 'https://www.jkan.app/show/1--------1---.html';
 
+class _TrustAllHttpOverrides extends HttpOverrides {
+  @override
+  HttpClient createHttpClient(SecurityContext? context) {
+    final client = super.createHttpClient(context);
+    client.badCertificateCallback = (cert, host, port) => true;
+    return client;
+  }
+}
+
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  HttpOverrides.global = _TrustAllHttpOverrides();
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
@@ -33,7 +47,8 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: '即看影视',
+      title: '晨曦影视',
+
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
@@ -135,10 +150,12 @@ class _HomePageState extends State<HomePage> {
                     padding: const EdgeInsets.symmetric(horizontal: 16),
                     sliver: content,
                   ),
+                  const SliverToBoxAdapter(child: _Footer()),
                 ],
               ),
             ),
           ),
+
           Positioned(
             right: 18,
             bottom: 24,
@@ -155,9 +172,10 @@ class _HomePageState extends State<HomePage> {
       child: Row(
         children: [
           const Text(
-            '即看影视',
+            '晨曦影视',
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
           ),
+
           const SizedBox(width: 12),
           Expanded(
             child: Wrap(
@@ -314,7 +332,25 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
+class _Footer extends StatelessWidget {
+  const _Footer();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 26),
+      child: Center(
+        child: Text(
+          '2026 © 晨曦微光',
+          style: TextStyle(color: Colors.white38, fontSize: 12),
+        ),
+      ),
+    );
+  }
+}
+
 class _VideoCard extends StatefulWidget {
+
   const _VideoCard({required this.item, required this.onTap});
 
   final VideoItem item;
@@ -553,11 +589,18 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                             ),
                           ],
                         ),
+                        const SizedBox(height: 10),
+                        const Text(
+                          '© 晨曦微光',
+                          style: TextStyle(color: Colors.white38, fontSize: 12),
+                        ),
+                        const SizedBox(height: 8),
                       ],
                     ),
     );
   }
 }
+
 
 class _CircleAction extends StatelessWidget {
   const _CircleAction({required this.icon, required this.onTap});
@@ -731,10 +774,24 @@ Future<File> downloadToTemp(String url) async {
   final safeName = base64Url.encode(utf8.encode(url));
   final file = File('${dir.path}/cache_$safeName');
   if (await file.exists()) return file;
-  final dio = Dio();
+  final dio = createDio();
   await dio.download(url, file.path);
   return file;
 }
+
+Dio createDio() {
+  final dio = Dio();
+  final adapter = dio.httpClientAdapter;
+  if (adapter is IOHttpClientAdapter) {
+    adapter.createHttpClient = () {
+      final client = HttpClient();
+      client.badCertificateCallback = (cert, host, port) => true;
+      return client;
+    };
+  }
+  return dio;
+}
+
 
 class HlsSegment {
   HlsSegment({required this.remote, required this.file});
@@ -748,7 +805,8 @@ class HlsProxyServer {
   final HttpServer server;
   final Directory cacheDir;
   final String indexUrl;
-  final Dio _dio = Dio();
+  final Dio _dio = createDio();
+
   final Map<String, HlsSegment> _segments = {};
   final Map<String, Uri> _playlists = {};
   final Map<String, String> _playlistContent = {};
