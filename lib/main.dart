@@ -675,15 +675,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
     } catch (e) {
       if (!mounted) return;
-      final fallback = await _tryVlcFallback(playUrl, e);
-      if (fallback) {
-        if (!mounted) return;
-        setState(() {
-          _loading = false;
-          _error = null;
-        });
-        return;
-      }
       final message = e is UnimplementedError
           ? '当前平台暂不支持视频播放，请在安卓设备运行'
           : '播放失败：$e';
@@ -692,6 +683,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         _loading = false;
       });
     }
+
 
 
 
@@ -758,15 +750,6 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
     } catch (e) {
       if (!mounted) return;
-      final fallback = await _tryVlcFallback(playUrl, e);
-      if (fallback) {
-        if (!mounted) return;
-        setState(() {
-          _loading = false;
-          _error = null;
-        });
-        return;
-      }
       final message = e is UnimplementedError
           ? '当前平台暂不支持视频播放，请在安卓设备运行'
           : '播放失败：$e';
@@ -775,6 +758,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         _loading = false;
       });
     }
+
 
 
 
@@ -823,10 +807,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _vlcController?.dispose();
     _vlcController = VlcPlayerController.network(
       url,
-      hwAcc: HwAcc.DISABLED,
+      hwAcc: HwAcc.auto,
       autoPlay: true,
       options: VlcPlayerOptions(),
     );
+
     _useVlcPlayer = true;
   }
 
