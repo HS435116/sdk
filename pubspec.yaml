@@ -40,9 +40,7 @@ dependencies:
   dio: ^5.7.0
   path_provider: ^2.1.4
   video_player: ^2.9.2
-  media_kit: ^1.1.11
-  media_kit_video: ^1.2.4
-  media_kit_libs_windows_video: ^1.0.11
+  video_player_win: ^3.2.2
   google_fonts: ^6.2.1
 
 

@@ -16,9 +16,8 @@ import 'package:html/parser.dart' as html_parser;
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart';
-import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_video/media_kit_video.dart';
 import 'package:google_fonts/google_fonts.dart';
+
 
 
 const String kBaseHost = 'https://www.jkan.app';
@@ -36,8 +35,9 @@ class _TrustAllHttpOverrides extends HttpOverrides {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  MediaKit.ensureInitialized();
   HttpOverrides.global = _TrustAllHttpOverrides();
+
+
 
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
 
@@ -574,9 +574,8 @@ class PlayerPage extends StatefulWidget {
 
 class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   VideoPlayerController? _controller;
-  Player? _desktopPlayer;
-  VideoController? _desktopVideoController;
   bool _loading = true;
+
 
   String? _error;
   File? _cachedFile;
@@ -598,11 +597,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _isDesktop = _detectDesktop();
-    if (_isDesktop) {
-      _initDesktopPlayer();
-    }
     _initPlayer();
   }
+
 
 
 
@@ -610,12 +607,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _controller?.dispose();
-    _desktopPlayer?.dispose();
-    _desktopPlayer = null;
-    _desktopVideoController = null;
     _deleteCache();
     super.dispose();
   }
+
 
 
   bool _detectDesktop() {
@@ -636,21 +631,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  void _initDesktopPlayer() {
-    _desktopPlayer ??= Player();
-    _desktopVideoController ??= VideoController(_desktopPlayer!);
-  }
 
-  Future<void> _playOnDesktop(String playUrl) async {
-    _initDesktopPlayer();
-    var url = playUrl;
-    if (playUrl.toLowerCase().contains('.m3u8')) {
-      _proxyServer = await HlsProxyServer.start(playUrl);
-      _cacheDir = _proxyServer!.cacheDir;
-      url = _proxyServer!.indexUrl;
-    }
-    await _desktopPlayer!.open(Media(url), play: true);
-  }
 
   Future<void> _initPlayer() async {
 
@@ -718,17 +699,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
       _currentSource = updated;
 
-      if (_isDesktop) {
-        await _playOnDesktop(playUrl);
-        if (!mounted) return;
-        setState(() {
-          _loading = false;
-          _error = null;
-        });
-        return;
-      }
-
       final isHls = playUrl.toLowerCase().contains('.m3u8');
+
       final controller = isHls
           ? await _prepareHlsController(playUrl)
           : await _prepareProgressiveController(playUrl);
@@ -801,10 +773,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _proxyServer = null;
     _controller?.dispose();
     _controller = null;
-    try {
-      await _desktopPlayer?.stop();
-    } catch (_) {}
     await _deleteCache();
+
     _cachedFile = null;
     _cacheDir = null;
   }
@@ -960,9 +930,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final isPlaying = _isDesktop
-        ? (_desktopPlayer?.state.playing ?? false)
-        : (_controller?.value.isPlaying ?? false);
+    final isPlaying = _controller?.value.isPlaying ?? false;
+
 
     return Scaffold(
 
@@ -1000,18 +969,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                       const SizedBox(height: 12),
                       ElevatedButton.icon(
                         onPressed: () {
-                          if (_isDesktop) {
-                            _desktopPlayer?.stop();
-                          } else {
-                            _controller?.dispose();
-                            _controller = null;
-                          }
+                          _controller?.dispose();
+                          _controller = null;
                           setState(() {
                             _loading = true;
                             _error = null;
                           });
                           _initPlayer();
                         },
+
                         icon: const Icon(Icons.refresh_rounded),
                         label: const Text('重试'),
                       ),
@@ -1026,29 +992,26 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                     ],
                   ),
                 )
-              : (_isDesktop ? _desktopVideoController == null : _controller == null)
+              : _controller == null
 
                   ? const Center(child: Text('播放器未就绪'))
                   : Column(
                       children: [
                         AspectRatio(
-                          aspectRatio: _isDesktop ? 16 / 9 : _controller!.value.aspectRatio,
-                          child: _isDesktop
-                              ? Video(controller: _desktopVideoController!)
-                              : VideoPlayer(_controller!),
+                          aspectRatio: _controller!.value.aspectRatio,
+                          child: VideoPlayer(_controller!),
                         ),
                         const SizedBox(height: 12),
-                        if (!_isDesktop)
-                          VideoProgressIndicator(
-                            _controller!,
-                            allowScrubbing: true,
-                            colors: const VideoProgressColors(
-                              playedColor: Color(0xFFF06292),
-                              bufferedColor: Colors.white24,
-                              backgroundColor: Colors.white12,
-                            ),
+                        VideoProgressIndicator(
+                          _controller!,
+                          allowScrubbing: true,
+                          colors: const VideoProgressColors(
+                            playedColor: Color(0xFFF06292),
+                            bufferedColor: Colors.white24,
+                            backgroundColor: Colors.white12,
                           ),
-                        if (!_isDesktop) const SizedBox(height: 12),
+                        ),
+                        const SizedBox(height: 12),
                         Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
@@ -1059,24 +1022,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                                 size: 48,
                               ),
                               onPressed: () async {
-                                if (_isDesktop) {
-                                  if (isPlaying) {
-                                    await _desktopPlayer?.pause();
-                                  } else {
-                                    await _desktopPlayer?.play();
-                                  }
+                                if (_controller!.value.isPlaying) {
+                                  await _controller!.pause();
                                 } else {
-                                  if (_controller!.value.isPlaying) {
-                                    await _controller!.pause();
-                                  } else {
-                                    await _controller!.play();
-                                  }
+                                  await _controller!.play();
                                 }
                                 setState(() {});
                               },
                             ),
                           ],
                         ),
+
                         if (_episodes.isNotEmpty) ...[
                           const SizedBox(height: 8),
                           SizedBox(
