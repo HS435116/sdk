@@ -680,11 +680,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       String? playUrl = source.mediaUrl;
       final playPageUrl = source.playPageUrl;
       if (playUrl == null && playPageUrl != null && _isValidPlayPageUrl(playPageUrl)) {
-        final playResp = await http.get(Uri.parse(toAbsUrl(playPageUrl)));
+        final playResp = await http.get(
+          Uri.parse(toAbsUrl(playPageUrl)),
+          headers: _defaultHeaders(playPageUrl),
+        );
         if (playResp.statusCode == 200) {
           playUrl = _parsePlayUrlFromHtml(playResp.body);
         }
       }
+
       if (playUrl != null && !playUrl.startsWith('http')) {
         playUrl = toAbsUrl(playUrl);
       }
@@ -741,13 +745,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
 
   Future<VideoPlayerController> _prepareHlsController(String playUrl) async {
-    _proxyServer = await HlsProxyServer.start(playUrl);
+    _proxyServer = await HlsProxyServer.start(playUrl, headers: _defaultHeaders(playUrl));
     _cacheDir = _proxyServer!.cacheDir;
     return VideoPlayerController.networkUrl(Uri.parse(_proxyServer!.indexUrl));
   }
 
   Future<VideoPlayerController> _prepareProgressiveController(String playUrl) async {
-    final controller = VideoPlayerController.networkUrl(Uri.parse(playUrl));
+    final controller = VideoPlayerController.networkUrl(
+      Uri.parse(playUrl),
+      httpHeaders: _defaultHeaders(playUrl),
+    );
     _downloadCancelToken = CancelToken();
     unawaited(_downloadToTempInBackground(playUrl, _downloadCancelToken!));
     return controller;
@@ -760,10 +767,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       final file = File('${dir.path}/cache_$safeName');
       _cachedFile = file;
       if (await file.exists()) return;
-      final dio = createDio();
+      final dio = createDio(headers: _defaultHeaders(url));
       await dio.download(url, file.path, cancelToken: token);
     } catch (_) {}
   }
+
 
 
   Future<void> _resetPlayer() async {
@@ -1395,10 +1403,11 @@ class _SourceEpisodeBundle {
 
 
 Future<PageData> fetchPage(String url) async {
-  final resp = await http.get(Uri.parse(url));
+  final resp = await http.get(Uri.parse(url), headers: _defaultHeaders(url));
   if (resp.statusCode != 200) {
     throw Exception('HTTP ${resp.statusCode}');
   }
+
   final doc = html_parser.parse(resp.body);
   final items = <VideoItem>[];
   final listNodes = doc.querySelectorAll('ul.vodlist li.vodlist_item');
@@ -1454,10 +1463,11 @@ String toAbsUrl(String url) {
 }
 
 Future<PlayMeta> fetchPlayMeta(String detailUrl) async {
-  final detailResp = await http.get(Uri.parse(detailUrl));
+  final detailResp = await http.get(Uri.parse(detailUrl), headers: _defaultHeaders(detailUrl));
   if (detailResp.statusCode != 200) {
     return PlayMeta(sources: [], episodes: [], sourceEpisodes: {});
   }
+
   final detailHtml = detailResp.body;
 
   final sources = <PlaySource>[];
@@ -1818,18 +1828,34 @@ String _tryDecodePercent(String input) {
 }
 
 
+
+
+Map<String, String> _defaultHeaders([String? referer]) {
+  final ref = referer == null || referer.isEmpty ? kBaseHost : referer;
+  return {
+    'User-Agent': 'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
+    'Referer': ref,
+    'Origin': kBaseHost,
+    'Accept': '*/*',
+    'Accept-Language': 'zh-CN,zh;q=0.9',
+  };
+}
+
 Future<File> downloadToTemp(String url) async {
   final dir = await getTemporaryDirectory();
   final safeName = base64Url.encode(utf8.encode(url));
   final file = File('${dir.path}/cache_$safeName');
   if (await file.exists()) return file;
-  final dio = createDio();
+  final dio = createDio(headers: _defaultHeaders(url));
   await dio.download(url, file.path);
   return file;
 }
 
-Dio createDio() {
+Dio createDio({Map<String, String>? headers}) {
   final dio = Dio();
+  if (headers != null) {
+    dio.options.headers.addAll(headers);
+  }
   final adapter = dio.httpClientAdapter;
   if (adapter is IOHttpClientAdapter) {
     adapter.createHttpClient = () {
@@ -1843,18 +1869,22 @@ Dio createDio() {
 
 
 class HlsSegment {
+
   HlsSegment({required this.remote, required this.file});
   final Uri remote;
   final File file;
 }
 
 class HlsProxyServer {
-  HlsProxyServer._(this.server, this.cacheDir, this.indexUrl);
+  HlsProxyServer._(this.server, this.cacheDir, this.indexUrl, this._headers)
+      : _dio = createDio(headers: _headers);
 
   final HttpServer server;
   final Directory cacheDir;
   final String indexUrl;
-  final Dio _dio = createDio();
+  final Map<String, String> _headers;
+  final Dio _dio;
+
 
   final Map<String, HlsSegment> _segments = {};
   final Map<String, Uri> _playlists = {};
@@ -1863,7 +1893,7 @@ class HlsProxyServer {
   int _segCounter = 0;
   int _playlistCounter = 0;
 
-  static Future<HlsProxyServer> start(String url) async {
+  static Future<HlsProxyServer> start(String url, {Map<String, String>? headers}) async {
     final tempDir = await getTemporaryDirectory();
     final safeName = base64Url.encode(utf8.encode(url));
     final cacheDir = Directory('${tempDir.path}/hls_$safeName');
@@ -1872,12 +1902,14 @@ class HlsProxyServer {
     }
 
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
-    final proxy = HlsProxyServer._(server, cacheDir, 'http://127.0.0.1:${server.port}/index.m3u8');
+    final headerMap = headers ?? _defaultHeaders(url);
+    final proxy = HlsProxyServer._(server, cacheDir, 'http://127.0.0.1:${server.port}/index.m3u8', headerMap);
     await proxy._buildPlaylist(url, key: 'index');
     proxy._listen();
     proxy._prefetchSegments();
     return proxy;
   }
+
 
   void _listen() {
     server.listen((request) async {
@@ -1933,7 +1965,11 @@ class HlsProxyServer {
     }
     try {
       if (!await seg.file.exists()) {
-        await _dio.download(seg.remote.toString(), seg.file.path);
+        await _dio.download(
+          seg.remote.toString(),
+          seg.file.path,
+          options: Options(headers: {..._headers, 'Referer': seg.remote.toString()}),
+        );
       }
       request.response.headers.contentType = ContentType.binary;
       await request.response.addStream(seg.file.openRead());
@@ -1945,9 +1981,16 @@ class HlsProxyServer {
   }
 
   Future<void> _buildPlaylist(String url, {required String key}) async {
-    final resp = await _dio.get<String>(url, options: Options(responseType: ResponseType.plain));
+    final resp = await _dio.get<String>(
+      url,
+      options: Options(
+        responseType: ResponseType.plain,
+        headers: {..._headers, 'Referer': url},
+      ),
+    );
     final content = resp.data ?? '';
     if (content.isEmpty) throw Exception('HLS 清单为空');
+
 
     final baseUri = Uri.parse(url);
     final lines = LineSplitter.split(content).toList();
@@ -1987,13 +2030,18 @@ class HlsProxyServer {
     try {
       for (final seg in _segments.values) {
         if (!await seg.file.exists()) {
-          await _dio.download(seg.remote.toString(), seg.file.path);
+          await _dio.download(
+            seg.remote.toString(),
+            seg.file.path,
+            options: Options(headers: {..._headers, 'Referer': seg.remote.toString()}),
+          );
         }
       }
     } finally {
       _prefetching = false;
     }
   }
+
 
   Future<void> close() async {
     await server.close(force: true);
