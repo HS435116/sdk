@@ -699,7 +699,7 @@ Future<String?> fetchPlayUrl(String detailUrl) async {
     }
   }
 
-  final videoMatch = RegExp(r'https?:\\/\\/[^\s\"\']+\.(m3u8|mp4|mkv|flv|mov)', caseSensitive: false).firstMatch(html);
+  final videoMatch = RegExp(r"https?:\/\/[^\s\"']+\.(m3u8|mp4|mkv|flv|mov)", caseSensitive: false).firstMatch(html);
   if (videoMatch != null) return videoMatch.group(0);
 
   return null;
