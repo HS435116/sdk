@@ -134,9 +134,10 @@ class _HomePageState extends State<HomePage> {
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = '加载失败：$e';
+        _error = _safeErrorMessage(e, isPlay: false);
         _loading = false;
       });
+
     }
   }
 
@@ -677,11 +678,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       if (!mounted) return;
       final message = e is UnimplementedError
           ? '当前平台暂不支持视频播放，请在安卓设备运行'
-          : '播放失败：$e';
+          : _safeErrorMessage(e, isPlay: true);
       setState(() {
         _error = message;
         _loading = false;
       });
+
     }
 
 
@@ -752,11 +754,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       if (!mounted) return;
       final message = e is UnimplementedError
           ? '当前平台暂不支持视频播放，请在安卓设备运行'
-          : '播放失败：$e';
+          : _safeErrorMessage(e, isPlay: true);
       setState(() {
         _error = message;
         _loading = false;
       });
+
     }
 
 
@@ -1800,7 +1803,32 @@ class _SourceEpisodeBundle {
 
 
 
+
+
+
+String _safeErrorMessage(Object error, {required bool isPlay}) {
+  final message = error.toString().toLowerCase();
+  final isNetwork = message.contains('socketexception') ||
+      message.contains('failed host lookup') ||
+      message.contains('network') ||
+      message.contains('timed out') ||
+      message.contains('connection') ||
+      message.contains('http');
+  if (isNetwork) {
+    return '连接服务器失败，请检查网络';
+  }
+  if (isPlay) {
+    if (message.contains('mediacodec') || message.contains('videorenderer') || message.contains('decoder')) {
+      return '当前设备解码失败，请切换视频源或重试';
+    }
+    return '播放失败，请重试或切换视频源';
+  }
+  return '连接服务器失败，请检查网络';
+}
+
+
 Future<PageData> fetchPage(String url) async {
+
   final resp = await http.get(Uri.parse(url), headers: _defaultHeaders(url));
   if (resp.statusCode != 200) {
     throw Exception('HTTP ${resp.statusCode}');
