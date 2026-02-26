@@ -159,7 +159,7 @@ class _HomePageState extends State<HomePage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('知道了'),
+              child: const Text('知道了!'),
             ),
           ],
         );
