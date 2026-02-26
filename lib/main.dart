@@ -19,7 +19,9 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:flutter_vlc_player/flutter_vlc_player.dart';
+import 'package:device_info_plus/device_info_plus.dart';
 import 'package:google_fonts/google_fonts.dart';
+
 
 
 
@@ -41,9 +43,10 @@ void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   HttpOverrides.global = _TrustAllHttpOverrides();
 
-
+  await DeviceProfileManager.instance.init();
 
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+
 
   SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
@@ -581,7 +584,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   VideoPlayerController? _controller;
   VlcPlayerController? _vlcController;
   bool _useVlcPlayer = false;
+  bool _isHarmonyDevice = false;
+  DecoderPreference _decoderPreference = DecoderPreference.native;
+  bool _preferVlcSoftware = false;
   bool _loading = true;
+
+
 
 
 
@@ -606,8 +614,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _isDesktop = _detectDesktop();
     WakelockPlus.enable();
-    _initPlayer();
+    _initDeviceProfile().whenComplete(_initPlayer);
   }
+
 
 
 
@@ -632,7 +641,20 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     return Platform.isWindows || Platform.isMacOS || Platform.isLinux;
   }
 
+  Future<void> _initDeviceProfile() async {
+    final profile = DeviceProfileManager.instance.profile;
+    if (profile == null || !profile.isAndroid) return;
+    _isHarmonyDevice = profile.isHarmony;
+    _decoderPreference = profile.decoderPreference;
+    _preferVlcSoftware = profile.decoderPreference == DecoderPreference.vlcSoftware;
+    if (_decoderPreference != DecoderPreference.native) {
+      _useVlcPlayer = true;
+    }
+  }
+
+
   Future<void> _deleteCache() async {
+
 
     try {
       await _proxyServer?.close();
@@ -675,6 +697,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       await _playSource(preferred);
 
     } catch (e) {
+      final fallback = await _tryVlcFallback(playUrl, e);
+      if (fallback) {
+        if (!mounted) return;
+        setState(() {
+          _loading = false;
+          _error = null;
+        });
+        return;
+      }
       if (!mounted) return;
       final message = e is UnimplementedError
           ? '当前平台暂不支持视频播放，请在安卓设备运行'
@@ -685,6 +716,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       });
 
     }
+
 
 
 
@@ -724,8 +756,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
       _currentSource = updated;
 
-      if (_useVlcPlayer) {
-        await _playWithVlc(playUrl);
+      final preferVlc = _useVlcPlayer || _decoderPreference != DecoderPreference.native;
+      if (preferVlc) {
+        await _playWithVlc(playUrl, preferSoftware: _preferVlcSoftware);
         if (!mounted) return;
         setState(() {
           _loading = false;
@@ -733,6 +766,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         });
         return;
       }
+
 
       final isHls = playUrl.toLowerCase().contains('.m3u8');
 
@@ -751,6 +785,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
 
     } catch (e) {
+      final fallback = await _tryVlcFallback(playUrl, e);
+      if (fallback) {
+        if (!mounted) return;
+        setState(() {
+          _loading = false;
+          _error = null;
+        });
+        return;
+      }
       if (!mounted) return;
       final message = e is UnimplementedError
           ? '当前平台暂不支持视频播放，请在安卓设备运行'
@@ -761,6 +804,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       });
 
     }
+
 
 
 
@@ -805,26 +849,42 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         message.contains('videoerror');
   }
 
-  Future<void> _playWithVlc(String playUrl) async {
+  bool _shouldForceSoftware(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('mediacodec') ||
+        message.contains('decoder') ||
+        message.contains('hardware') ||
+        message.contains('codec');
+  }
+
+  Future<void> _playWithVlc(String playUrl, {bool preferSoftware = false}) async {
+
     final url = playUrl;
     _vlcController?.dispose();
+    final options = preferSoftware
+        ? VlcPlayerOptions(advanced: VlcAdvancedOptions(['--avcodec-hw=none']))
+        : VlcPlayerOptions();
     _vlcController = VlcPlayerController.network(
       url,
       hwAcc: HwAcc.auto,
       autoPlay: true,
-      options: VlcPlayerOptions(),
+      options: options,
     );
 
     _useVlcPlayer = true;
   }
 
+
   Future<bool> _tryVlcFallback(String? playUrl, Object error) async {
     if (!Platform.isAndroid) return false;
     if (playUrl == null || playUrl.isEmpty) return false;
     if (!_shouldFallbackToVlc(error)) return false;
-    await _playWithVlc(playUrl);
+    final preferSoftware = _preferVlcSoftware || _shouldForceSoftware(error) || _isHarmonyDevice;
+    _decoderPreference = preferSoftware ? DecoderPreference.vlcSoftware : DecoderPreference.vlcHardware;
+    await _playWithVlc(playUrl, preferSoftware: preferSoftware);
     return true;
   }
+
 
   Future<void> _downloadToTempInBackground(String url, CancelToken token) async {
 
@@ -1805,6 +1865,188 @@ class _SourceEpisodeBundle {
 
 
 
+
+enum DecoderPreference { native, vlcHardware, vlcSoftware }
+
+class DeviceProfile {
+  DeviceProfile({
+    required this.isAndroid,
+    required this.sdkInt,
+    required this.supportedAbis,
+    required this.brand,
+    required this.manufacturer,
+    required this.device,
+    required this.model,
+    required this.product,
+    required this.hardware,
+    required this.display,
+    required this.isHarmony,
+    required this.isTvBox,
+    required this.isLowEnd,
+    required this.recommendedApkTag,
+    required this.decoderPreference,
+  });
+
+  final bool isAndroid;
+  final int? sdkInt;
+  final List<String> supportedAbis;
+  final String brand;
+  final String manufacturer;
+  final String device;
+  final String model;
+  final String product;
+  final String hardware;
+  final String display;
+  final bool isHarmony;
+  final bool isTvBox;
+  final bool isLowEnd;
+  final String recommendedApkTag;
+  final DecoderPreference decoderPreference;
+
+  bool get isOldAndroid => sdkInt != null && sdkInt! < 24;
+  bool get hasInstallParseRisk => sdkInt != null && sdkInt! < 21;
+}
+
+class DeviceProfileManager {
+  DeviceProfileManager._();
+
+  static final DeviceProfileManager instance = DeviceProfileManager._();
+
+  DeviceProfile? _profile;
+
+  DeviceProfile? get profile => _profile;
+
+  Future<void> init() async {
+    if (_profile != null) return;
+    if (!Platform.isAndroid) {
+      _profile = DeviceProfile(
+        isAndroid: false,
+        sdkInt: null,
+        supportedAbis: const [],
+        brand: '',
+        manufacturer: '',
+        device: '',
+        model: '',
+        product: '',
+        hardware: '',
+        display: '',
+        isHarmony: false,
+        isTvBox: false,
+        isLowEnd: false,
+        recommendedApkTag: 'universal',
+        decoderPreference: DecoderPreference.native,
+      );
+      return;
+    }
+    try {
+      final info = await DeviceInfoPlugin().androidInfo;
+      final lower = (String? v) => (v ?? '').toLowerCase();
+      final brand = lower(info.brand);
+      final manufacturer = lower(info.manufacturer);
+      final device = lower(info.device);
+      final model = lower(info.model);
+      final product = lower(info.product);
+      final hardware = lower(info.hardware);
+      final display = lower(info.display);
+      final abis = info.supportedAbis.map((e) => e.toLowerCase()).toList();
+      final sdkInt = info.version.sdkInt;
+
+      final isHuawei = [brand, manufacturer, device, model, product].any(
+        (v) => v.contains('huawei') || v.contains('honor'),
+      );
+      final isHarmony = display.contains('harmony') ||
+          display.contains('hongmeng') ||
+          display.contains('hm') ||
+          isHuawei;
+
+      final deviceHints = '$brand $manufacturer $model $device $product $hardware'.toLowerCase();
+      final isTvBox = _containsAny(deviceHints, [
+        'tv',
+        'box',
+        'androidtv',
+        'mibox',
+        'mi box',
+        'x96',
+        'x98',
+        'x88',
+        'rk',
+        'rockchip',
+        'amlogic',
+        'mstar',
+        'allwinner',
+        'skyworth',
+        'hisense',
+        'konka',
+        'coocaa',
+        'changhong',
+        'tcl',
+        'philips',
+        'sony',
+      ]);
+
+      final is32Only = abis.isNotEmpty && !abis.any((a) => a.contains('arm64') || a.contains('x86_64'));
+      final isLowEnd = (sdkInt <= 25) || is32Only || _containsAny(deviceHints, ['amlogic', 'rockchip', 'mstar', 'allwinner']);
+
+      DecoderPreference decoderPreference = DecoderPreference.native;
+      if (isHarmony || isLowEnd) {
+        decoderPreference = DecoderPreference.vlcSoftware;
+      } else if (isTvBox) {
+        decoderPreference = DecoderPreference.vlcHardware;
+      }
+
+      _profile = DeviceProfile(
+        isAndroid: true,
+        sdkInt: sdkInt,
+        supportedAbis: abis,
+        brand: brand,
+        manufacturer: manufacturer,
+        device: device,
+        model: model,
+        product: product,
+        hardware: hardware,
+        display: display,
+        isHarmony: isHarmony,
+        isTvBox: isTvBox,
+        isLowEnd: isLowEnd,
+        recommendedApkTag: _pickApkTag(abis),
+        decoderPreference: decoderPreference,
+      );
+    } catch (_) {
+      _profile = DeviceProfile(
+        isAndroid: true,
+        sdkInt: null,
+        supportedAbis: const [],
+        brand: '',
+        manufacturer: '',
+        device: '',
+        model: '',
+        product: '',
+        hardware: '',
+        display: '',
+        isHarmony: false,
+        isTvBox: false,
+        isLowEnd: false,
+        recommendedApkTag: 'universal',
+        decoderPreference: DecoderPreference.native,
+      );
+    }
+  }
+}
+
+bool _containsAny(String source, List<String> keys) {
+  for (final key in keys) {
+    if (source.contains(key)) return true;
+  }
+  return false;
+}
+
+String _pickApkTag(List<String> abis) {
+  if (abis.any((a) => a.contains('arm64'))) return 'arm64-v8a';
+  if (abis.any((a) => a.contains('armeabi-v7a'))) return 'armeabi-v7a';
+  if (abis.any((a) => a.contains('x86_64'))) return 'x86_64';
+  if (abis.any((a) => a.contains('x86'))) return 'x86';
+  return abis.isNotEmpty ? abis.first : 'universal';
+}
 
 String _safeErrorMessage(Object error, {required bool isPlay}) {
   final message = error.toString().toLowerCase();
