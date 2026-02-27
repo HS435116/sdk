@@ -13,3 +13,7 @@ git push
 git add -A
 git commit -m "兼容版本"
 git push origin main
+
+本机调试
+flutter pub get
+flutter run -d windows（PC 调试）

@@ -588,6 +588,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   DecoderPreference _decoderPreference = DecoderPreference.native;
   bool _preferVlcSoftware = false;
   bool _loading = true;
+  bool _waitingForFirstFrame = false;
+
 
 
 
@@ -605,11 +607,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   late final bool _isDesktop;
   CancelToken? _downloadCancelToken;
-
-
+  Timer? _playbackWatchdog;
+  int _playRequestId = 0;
 
   @override
   void initState() {
+
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _isDesktop = _detectDesktop();
@@ -625,12 +628,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _playbackWatchdog?.cancel();
     _controller?.dispose();
     _vlcController?.dispose();
     WakelockPlus.disable();
     _deleteCache();
     super.dispose();
   }
+
 
 
 
@@ -697,16 +702,20 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       await _playSource(preferred);
 
     } catch (e) {
+      _stopPlaybackWatchdog();
       if (!mounted) return;
       final message = e is UnimplementedError
           ? '当前平台暂不支持视频播放，请在安卓设备运行'
           : _safeErrorMessage(e, isPlay: true);
       setState(() {
+        _waitingForFirstFrame = false;
         _error = message;
         _loading = false;
       });
 
+
     }
+
 
 
 
@@ -750,6 +759,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
       final preferVlc = _useVlcPlayer || _decoderPreference != DecoderPreference.native;
       if (preferVlc) {
+        _waitingForFirstFrame = true;
+        _startPlaybackWatchdog(playUrl, usingVlc: true, preferSoftware: _preferVlcSoftware);
         await _playWithVlc(playUrl, preferSoftware: _preferVlcSoftware);
         if (!mounted) return;
         setState(() {
@@ -760,6 +771,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
 
 
+
+      _startPlaybackWatchdog(playUrl, usingVlc: false, preferSoftware: false);
       final isHls = playUrl.toLowerCase().contains('.m3u8');
 
       final controller = isHls
@@ -768,25 +781,33 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
       await controller.initialize();
       await controller.play();
+      _stopPlaybackWatchdog();
       if (!mounted) return;
       setState(() {
         _controller = controller;
+        _waitingForFirstFrame = false;
         _loading = false;
         _error = null;
       });
 
 
+
+
     } catch (e) {
+      _stopPlaybackWatchdog();
       if (!mounted) return;
       final message = e is UnimplementedError
           ? '当前平台暂不支持视频播放，请在安卓设备运行'
           : _safeErrorMessage(e, isPlay: true);
       setState(() {
+        _waitingForFirstFrame = false;
         _error = message;
         _loading = false;
       });
 
+
     }
+
 
 
 
@@ -844,19 +865,46 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   Future<void> _playWithVlc(String playUrl, {bool preferSoftware = false}) async {
 
     final url = playUrl;
+    _waitingForFirstFrame = true;
     _vlcController?.dispose();
-    final options = preferSoftware
-        ? VlcPlayerOptions(advanced: VlcAdvancedOptions(['--avcodec-hw=none']))
-        : VlcPlayerOptions();
-    _vlcController = VlcPlayerController.network(
+
+    final advanced = <String>[
+      '--network-caching=1500',
+      '--file-caching=1500',
+      '--live-caching=1500',
+      '--clock-jitter=0',
+      '--clock-synchro=0',
+    ];
+    if (preferSoftware) {
+      advanced.add('--avcodec-hw=none');
+    }
+    final options = VlcPlayerOptions(advanced: VlcAdvancedOptions(advanced));
+    final controller = VlcPlayerController.network(
       url,
       hwAcc: HwAcc.auto,
       autoPlay: true,
       options: options,
     );
+    controller.addListener(() {
+      if (!mounted) return;
+      final value = controller.value;
+      if (value.isInitialized || value.isPlaying) {
+        _stopPlaybackWatchdog();
+        if (_loading || _waitingForFirstFrame) {
+          setState(() {
+            _waitingForFirstFrame = false;
+            _loading = false;
+            _error = null;
+          });
+        }
+
+      }
+    });
+    _vlcController = controller;
 
     _useVlcPlayer = true;
   }
+
 
 
   Future<bool> _tryVlcFallback(String? playUrl, Object error) async {
@@ -883,13 +931,55 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
+  void _startPlaybackWatchdog(String playUrl, {required bool usingVlc, required bool preferSoftware}) {
+    _playbackWatchdog?.cancel();
+    final requestId = ++_playRequestId;
+    _playbackWatchdog = Timer(const Duration(seconds: 15), () async {
+      if (!mounted || requestId != _playRequestId) return;
+      if (!_waitingForFirstFrame) return;
+      if (usingVlc) {
+        if (!preferSoftware) {
+          _preferVlcSoftware = true;
+          _decoderPreference = DecoderPreference.vlcSoftware;
+          _waitingForFirstFrame = true;
+          await _playWithVlc(playUrl, preferSoftware: true);
+          return;
+        }
+      } else {
+        if (Platform.isAndroid) {
+          _waitingForFirstFrame = true;
+          await _playWithVlc(playUrl, preferSoftware: _preferVlcSoftware || _isHarmonyDevice);
+          if (!mounted) return;
+          setState(() {
+            _loading = false;
+            _error = null;
+          });
+          return;
+        }
+      }
+      if (!mounted) return;
+      setState(() {
+        _waitingForFirstFrame = false;
+        _loading = false;
+        _error = '播放超时，请重试或切换视频源';
+      });
+    });
 
+  }
+
+  void _stopPlaybackWatchdog() {
+    _playbackWatchdog?.cancel();
+  }
 
   Future<void> _resetPlayer() async {
+    _stopPlaybackWatchdog();
+    _waitingForFirstFrame = false;
+
     try {
       await _proxyServer?.close();
     } catch (_) {}
     _proxyServer = null;
+
     _controller?.dispose();
     _controller = null;
     _vlcController?.dispose();
