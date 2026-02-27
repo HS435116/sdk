@@ -656,10 +656,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _isHarmonyDevice = profile.isHarmony;
     _decoderPreference = profile.decoderPreference;
     _preferVlcSoftware = profile.decoderPreference == DecoderPreference.vlcSoftware;
+    if (_isHarmonyDevice) {
+      _vlcBroken = true;
+      _useVlcPlayer = false;
+      _decoderPreference = DecoderPreference.native;
+      return;
+    }
     if (_decoderPreference != DecoderPreference.native) {
       _useVlcPlayer = true;
     }
   }
+
 
 
   Future<void> _deleteCache() async {
@@ -737,8 +744,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       playUrl = source.mediaUrl;
 
       final playPageUrl = source.playPageUrl;
-      _currentPlayPageUrl = playPageUrl;
+      _currentPlayPageUrl = playPageUrl ?? widget.item.detailUrl;
       if (playUrl == null && playPageUrl != null && _isValidPlayPageUrl(playPageUrl)) {
+
 
         final playResp = await http.get(
           Uri.parse(toAbsUrl(playPageUrl)),
@@ -763,7 +771,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
       _currentSource = updated;
 
-      final preferVlc = _useVlcPlayer || _decoderPreference != DecoderPreference.native;
+      final preferVlc = !_vlcBroken && (_useVlcPlayer || _decoderPreference != DecoderPreference.native);
+
       if (preferVlc) {
         _waitingForFirstFrame = true;
         _startPlaybackWatchdog(playUrl, usingVlc: true, preferSoftware: _preferVlcSoftware);
@@ -826,7 +835,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   Future<void> _playEpisode(EpisodeItem episode) async {
     _currentEpisode = episode;
     final isMedia = _looksLikeMediaUrl(episode.playUrl);
-    _currentPlayPageUrl = isMedia ? null : episode.playUrl;
+    _currentPlayPageUrl = isMedia ? widget.item.detailUrl : episode.playUrl;
+
     await _playSource(
 
       PlaySource(
@@ -839,16 +849,19 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
 
   Future<VideoPlayerController> _prepareHlsController(String playUrl) async {
-    _proxyServer = await HlsProxyServer.start(playUrl, headers: _defaultHeaders(playUrl));
+    final headers = _defaultHeaders(_currentPlayPageUrl ?? playUrl);
+    _proxyServer = await HlsProxyServer.start(playUrl, headers: headers);
     _cacheDir = _proxyServer!.cacheDir;
-    return VideoPlayerController.networkUrl(Uri.parse(_proxyServer!.indexUrl));
+    return VideoPlayerController.networkUrl(Uri.parse(_proxyServer!.indexUrl), httpHeaders: headers);
   }
 
   Future<VideoPlayerController> _prepareProgressiveController(String playUrl) async {
+    final headers = _defaultHeaders(_currentPlayPageUrl ?? playUrl);
     final controller = VideoPlayerController.networkUrl(
       Uri.parse(playUrl),
-      httpHeaders: _defaultHeaders(playUrl),
+      httpHeaders: headers,
     );
+
     _downloadCancelToken = CancelToken();
     unawaited(_downloadToTempInBackground(playUrl, _downloadCancelToken!));
     return controller;
@@ -1286,7 +1299,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final useVlc = _useVlcPlayer && _vlcController != null;
+    final useVlc = _useVlcPlayer && !_vlcBroken && _vlcController != null;
+
     final vlcAspect = useVlc && _vlcController!.value.aspectRatio > 0
         ? _vlcController!.value.aspectRatio
         : 16 / 9;
@@ -2208,7 +2222,9 @@ class DeviceProfileManager {
       final isLowEnd = (sdkInt <= 25) || is32Only || _containsAny(deviceHints, ['amlogic', 'rockchip', 'mstar', 'allwinner']);
 
       DecoderPreference decoderPreference = DecoderPreference.native;
-      if (isHarmony || isLowEnd) {
+      if (isHarmony) {
+        decoderPreference = DecoderPreference.native;
+      } else if (isLowEnd) {
         decoderPreference = DecoderPreference.vlcSoftware;
       } else if (isTvBox) {
         decoderPreference = DecoderPreference.vlcHardware;

@@ -11,7 +11,7 @@ git push
 
 
 git add -A
-git commit -m "兼容版本"
+git commit -m "播放器兼容版本"
 git push origin main
 
 本机调试
@@ -25,8 +25,12 @@ adb shell pm list users
 adb shell pm list packages | findstr com.example.sdk
 再输入清理残余
 adb shell pm list packages --user 0 | findstr com.example.sdk
-adb shell pm list packages --user 10 | findstr com.example.sdk
+adb shell pm li
+
+
+st packages --user 10 | findstr com.example.sdk
 adb shell pm uninstall --user 10 com.example.sdk
 adb shell pm list packages --user 10 | findstr com.example.sdk
 
-
+日志记录
+adb logcat
