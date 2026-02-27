@@ -589,6 +589,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   bool _preferVlcSoftware = false;
   bool _loading = true;
   bool _waitingForFirstFrame = false;
+  bool _vlcBroken = false;
+
 
 
 
@@ -604,8 +606,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   List<EpisodeItem> _episodes = [];
   EpisodeItem? _currentEpisode;
   PlaySource? _currentSource;
+  String? _currentPlayPageUrl;
 
   late final bool _isDesktop;
+
   CancelToken? _downloadCancelToken;
   Timer? _playbackWatchdog;
   int _playRequestId = 0;
@@ -733,7 +737,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       playUrl = source.mediaUrl;
 
       final playPageUrl = source.playPageUrl;
+      _currentPlayPageUrl = playPageUrl;
       if (playUrl == null && playPageUrl != null && _isValidPlayPageUrl(playPageUrl)) {
+
         final playResp = await http.get(
           Uri.parse(toAbsUrl(playPageUrl)),
           headers: _defaultHeaders(playPageUrl),
@@ -820,7 +826,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   Future<void> _playEpisode(EpisodeItem episode) async {
     _currentEpisode = episode;
     final isMedia = _looksLikeMediaUrl(episode.playUrl);
+    _currentPlayPageUrl = isMedia ? null : episode.playUrl;
     await _playSource(
+
       PlaySource(
         name: _currentSource?.name ?? episode.name,
         playPageUrl: isMedia ? null : episode.playUrl,
@@ -878,9 +886,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (preferSoftware) {
       advanced.add('--avcodec-hw=none');
     }
-    final headers = _defaultHeaders(url);
-    final referrer = headers['Referer'] ?? kBaseHost;
+    final headers = _defaultHeaders(_currentPlayPageUrl ?? kBaseHost);
+    final referrer = _currentPlayPageUrl ?? headers['Referer'] ?? kBaseHost;
     final userAgent = headers['User-Agent'] ?? 'Mozilla/5.0';
+    final extras = <String>[];
+    if (_isHarmonyDevice) {
+      extras.addAll(['--vout=android-display', '--aout=opensles']);
+    }
     final options = VlcPlayerOptions(
       advanced: VlcAdvancedOptions(advanced),
       http: VlcHttpOptions([
@@ -890,14 +902,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         VlcHttpOptions.httpReferrer(referrer),
         VlcHttpOptions.httpUserAgent(userAgent),
       ]),
+      extras: extras.isEmpty ? null : extras,
     );
     final controller = VlcPlayerController.network(
 
       url,
-      hwAcc: HwAcc.auto,
+      hwAcc: preferSoftware ? HwAcc.disabled : HwAcc.auto,
       autoPlay: true,
+      autoInitialize: false,
       options: options,
     );
+
     controller.addListener(() {
       if (!mounted) return;
       final value = controller.value;
@@ -912,18 +927,101 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         }
 
       }
+      if (value.hasError && value.errorDescription.isNotEmpty) {
+        _stopPlaybackWatchdog();
+        if (!mounted) return;
+        setState(() {
+          _waitingForFirstFrame = false;
+          _loading = false;
+          _error = _safeErrorMessage(value.errorDescription, isPlay: true);
+        });
+      }
     });
     _vlcController = controller;
 
     _useVlcPlayer = true;
+
+    await _initializeVlcController(controller, url);
   }
 
+  Future<void> _initializeVlcController(VlcPlayerController controller, String playUrl) async {
+    final ready = await _waitForVlcReady(controller);
+    if (!ready) {
+      await _handleVlcInitError(Exception('vlc view not ready'), playUrl);
+      return;
+    }
+    try {
+      await controller.initialize();
+    } catch (e) {
+      await _handleVlcInitError(e, playUrl);
+    }
+  }
 
+  Future<bool> _waitForVlcReady(VlcPlayerController controller) async {
+    for (var i = 0; i < 50; i++) {
+      if (controller.isReadyToInitialize == true) return true;
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    return controller.isReadyToInitialize == true;
+  }
+
+  Future<void> _handleVlcInitError(Object error, String playUrl) async {
+    final message = error.toString().toLowerCase();
+    if (message.contains('channel-error') || message.contains('unable to establish connection on channel')) {
+      _vlcBroken = true;
+    }
+    if (_vlcBroken) {
+      _useVlcPlayer = false;
+      _decoderPreference = DecoderPreference.native;
+      _vlcController?.dispose();
+      _vlcController = null;
+      await _playNativeFallback(playUrl);
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _waitingForFirstFrame = false;
+      _loading = false;
+      _error = _safeErrorMessage(error, isPlay: true);
+    });
+  }
+
+  Future<void> _playNativeFallback(String playUrl) async {
+    try {
+      _waitingForFirstFrame = true;
+      _startPlaybackWatchdog(playUrl, usingVlc: false, preferSoftware: false);
+      final isHls = playUrl.toLowerCase().contains('.m3u8');
+      final controller = isHls
+          ? await _prepareHlsController(playUrl)
+          : await _prepareProgressiveController(playUrl);
+      await controller.initialize();
+      await controller.play();
+      _stopPlaybackWatchdog();
+      if (!mounted) return;
+      setState(() {
+        _controller = controller;
+        _waitingForFirstFrame = false;
+        _loading = false;
+        _error = null;
+      });
+    } catch (e) {
+      _stopPlaybackWatchdog();
+      if (!mounted) return;
+      setState(() {
+        _waitingForFirstFrame = false;
+        _loading = false;
+        _error = _safeErrorMessage(e, isPlay: true);
+      });
+    }
+  }
 
   Future<bool> _tryVlcFallback(String? playUrl, Object error) async {
+
     if (!Platform.isAndroid) return false;
+    if (_vlcBroken) return false;
     if (playUrl == null || playUrl.isEmpty) return false;
     if (!_shouldFallbackToVlc(error)) return false;
+
     final preferSoftware = _preferVlcSoftware || _shouldForceSoftware(error) || _isHarmonyDevice;
     _decoderPreference = preferSoftware ? DecoderPreference.vlcSoftware : DecoderPreference.vlcHardware;
     await _playWithVlc(playUrl, preferSoftware: preferSoftware);
@@ -1163,7 +1261,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           builder: (_) => _FullscreenVlcPlayerPage(
             controller: vlc,
             title: widget.item.title,
+            virtualDisplay: !_isHarmonyDevice,
           ),
+
         ),
       );
       if (mounted) setState(() {});
@@ -1284,8 +1384,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                               ? VlcPlayer(
                                   controller: _vlcController!,
                                   aspectRatio: vlcAspect,
+                                  virtualDisplay: !_isHarmonyDevice,
                                   placeholder: const Center(child: CircularProgressIndicator()),
                                 )
+
                               : VideoPlayer(_controller!),
                         ),
                         const SizedBox(height: 8),
@@ -1650,10 +1752,16 @@ class _VlcControls extends StatelessWidget {
 }
 
 class _FullscreenVlcPlayerPage extends StatefulWidget {
-  const _FullscreenVlcPlayerPage({required this.controller, required this.title});
+  const _FullscreenVlcPlayerPage({
+    required this.controller,
+    required this.title,
+    required this.virtualDisplay,
+  });
 
   final VlcPlayerController controller;
   final String title;
+  final bool virtualDisplay;
+
 
   @override
   State<_FullscreenVlcPlayerPage> createState() => _FullscreenVlcPlayerPageState();
@@ -1723,8 +1831,10 @@ class _FullscreenVlcPlayerPageState extends State<_FullscreenVlcPlayerPage> {
                   child: VlcPlayer(
                     controller: widget.controller,
                     aspectRatio: aspect,
+                    virtualDisplay: widget.virtualDisplay,
                     placeholder: const Center(child: CircularProgressIndicator()),
                   ),
+
                 ),
               ),
               if (_controlsVisible)
