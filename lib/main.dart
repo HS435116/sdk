@@ -587,9 +587,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   bool _isHarmonyDevice = false;
   DecoderPreference _decoderPreference = DecoderPreference.native;
   bool _preferVlcSoftware = false;
+  bool _harmonyTriedHardware = false;
+  bool _harmonyTriedSoftware = false;
   bool _loading = true;
   bool _waitingForFirstFrame = false;
   bool _vlcBroken = false;
+
 
 
 
@@ -613,6 +616,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   CancelToken? _downloadCancelToken;
   Timer? _playbackWatchdog;
   int _playRequestId = 0;
+  int _autoSwitchCount = 0;
+
 
   @override
   void initState() {
@@ -657,7 +662,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _decoderPreference = profile.decoderPreference;
     _preferVlcSoftware = profile.decoderPreference == DecoderPreference.vlcSoftware;
     if (_isHarmonyDevice) {
-      _vlcBroken = true;
+      _vlcBroken = false;
       _useVlcPlayer = false;
       _decoderPreference = DecoderPreference.native;
       return;
@@ -714,6 +719,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
     } catch (e) {
       _stopPlaybackWatchdog();
+      final switched = await _tryAutoSwitchSourceOnDecode(e);
+      if (switched) return;
       if (!mounted) return;
       final message = e is UnimplementedError
           ? '当前平台暂不支持视频播放，请在安卓设备运行'
@@ -726,6 +733,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
 
     }
+
+
+
 
 
 
@@ -779,11 +789,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         await _playWithVlc(playUrl, preferSoftware: _preferVlcSoftware);
         if (!mounted) return;
         setState(() {
+          _autoSwitchCount = 0;
           _loading = false;
           _error = null;
         });
         return;
       }
+
 
 
 
@@ -800,6 +812,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       if (!mounted) return;
       setState(() {
         _controller = controller;
+        _autoSwitchCount = 0;
         _waitingForFirstFrame = false;
         _loading = false;
         _error = null;
@@ -808,8 +821,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
 
 
+
     } catch (e) {
       _stopPlaybackWatchdog();
+      final switched = await _tryAutoSwitchSourceOnDecode(e);
+      if (switched) return;
       if (!mounted) return;
       final message = e is UnimplementedError
           ? '当前平台暂不支持视频播放，请在安卓设备运行'
@@ -822,6 +838,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
 
     }
+
+
+
 
 
 
@@ -888,6 +907,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final url = playUrl;
     _waitingForFirstFrame = true;
     _vlcController?.dispose();
+    if (_isHarmonyDevice) {
+      if (preferSoftware) {
+        _harmonyTriedSoftware = true;
+      } else {
+        _harmonyTriedHardware = true;
+      }
+    }
 
     final advanced = <String>[
       '--network-caching=1500',
@@ -991,6 +1017,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       await _playNativeFallback(playUrl);
       return;
     }
+    if (_isHarmonyDevice && !_harmonyTriedSoftware) {
+      _preferVlcSoftware = true;
+      _decoderPreference = DecoderPreference.vlcSoftware;
+      await _playWithVlc(playUrl, preferSoftware: true);
+      return;
+    }
     if (!mounted) return;
     setState(() {
       _waitingForFirstFrame = false;
@@ -1013,10 +1045,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       if (!mounted) return;
       setState(() {
         _controller = controller;
+        _autoSwitchCount = 0;
         _waitingForFirstFrame = false;
         _loading = false;
         _error = null;
       });
+
     } catch (e) {
       _stopPlaybackWatchdog();
       if (!mounted) return;
@@ -1028,14 +1062,67 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
   }
 
+  bool _isDecodeError(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('mediacodec') ||
+        message.contains('videorenderer') ||
+        message.contains('decoder') ||
+        message.contains('codec') ||
+        message.contains('videoerror');
+  }
+
+  PlaySource? _pickNextSourceForAutoSwitch() {
+    if (_sources.isEmpty) return null;
+    final current = _currentSource;
+    final currentIndex = current == null
+        ? -1
+        : _sources.indexWhere(
+            (s) => s.name == current.name && s.playPageUrl == current.playPageUrl,
+          );
+    for (var i = 1; i <= _sources.length; i++) {
+      final idx = (currentIndex + i) % _sources.length;
+      final candidate = _sources[idx];
+      if (current != null && candidate.name == current.name && candidate.playPageUrl == current.playPageUrl) {
+        continue;
+      }
+      return candidate;
+    }
+    return null;
+  }
+
+  Future<bool> _tryAutoSwitchSourceOnDecode(Object error) async {
+    if (!_isHarmonyDevice) return false;
+    if (!_isDecodeError(error)) return false;
+    if (_autoSwitchCount >= 2) return false;
+    final next = _pickNextSourceForAutoSwitch();
+    if (next == null) return false;
+    _autoSwitchCount++;
+    if (!mounted) return false;
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    final episodes = _sourceEpisodes[next.name];
+    if (episodes != null && episodes.isNotEmpty) {
+      _episodes = episodes;
+      _currentSource = next;
+      _currentEpisode = episodes.first;
+      await _playEpisode(episodes.first);
+      return true;
+    }
+    await _playSource(next);
+    return true;
+  }
+
   Future<bool> _tryVlcFallback(String? playUrl, Object error) async {
+
 
     if (!Platform.isAndroid) return false;
     if (_vlcBroken) return false;
     if (playUrl == null || playUrl.isEmpty) return false;
     if (!_shouldFallbackToVlc(error)) return false;
 
-    final preferSoftware = _preferVlcSoftware || _shouldForceSoftware(error) || _isHarmonyDevice;
+    final preferSoftware = _preferVlcSoftware || _shouldForceSoftware(error) || (_isHarmonyDevice && _harmonyTriedHardware);
     _decoderPreference = preferSoftware ? DecoderPreference.vlcSoftware : DecoderPreference.vlcHardware;
     await _playWithVlc(playUrl, preferSoftware: preferSoftware);
     return true;
@@ -1074,7 +1161,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       } else {
         if (Platform.isAndroid) {
           _waitingForFirstFrame = true;
-          await _playWithVlc(playUrl, preferSoftware: _preferVlcSoftware || _isHarmonyDevice);
+          await _playWithVlc(
+            playUrl,
+            preferSoftware: _preferVlcSoftware || (_isHarmonyDevice && _harmonyTriedHardware),
+          );
           if (!mounted) return;
           setState(() {
             _loading = false;
@@ -1100,6 +1190,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   Future<void> _resetPlayer() async {
     _stopPlaybackWatchdog();
     _waitingForFirstFrame = false;
+    if (_isHarmonyDevice) {
+      _harmonyTriedHardware = false;
+      _harmonyTriedSoftware = false;
+    }
 
     try {
       await _proxyServer?.close();
