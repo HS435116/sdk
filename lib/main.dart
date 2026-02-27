@@ -159,7 +159,7 @@ class _HomePageState extends State<HomePage> {
           actions: [
             TextButton(
               onPressed: () => Navigator.of(context).pop(),
-              child: const Text('知道了!'),
+              child: const Text('知道了'),
             ),
           ],
         );
@@ -1126,6 +1126,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                         onPressed: () {
                           _controller?.dispose();
                           _controller = null;
+                          _vlcController?.dispose();
+                          _vlcController = null;
                           setState(() {
                             _loading = true;
                             _error = null;
@@ -1147,9 +1149,27 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                     ],
                   ),
                 )
-              : _controller == null
-
-                  ? const Center(child: Text('播放器未就绪'))
+              : (useVlc ? _vlcController == null : _controller == null)
+                  ? Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text('播放器未就绪'),
+                          const SizedBox(height: 10),
+                          ElevatedButton.icon(
+                            onPressed: () {
+                              setState(() {
+                                _loading = true;
+                                _error = null;
+                              });
+                              _initPlayer();
+                            },
+                            icon: const Icon(Icons.refresh_rounded),
+                            label: const Text('重试'),
+                          ),
+                        ],
+                      ),
+                    )
                   : ListView(
                       padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
                       children: [
@@ -1193,12 +1213,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                         const SizedBox(height: 8),
                         const Center(
                           child: Text(
-                            '© 晨曦微光',
+                            '2026 © 晨曦微光',
                             style: TextStyle(color: Colors.white38, fontSize: 12),
                           ),
                         ),
                       ],
                     ),
+
 
 
     );
