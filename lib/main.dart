@@ -589,9 +589,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   bool _preferVlcSoftware = false;
   bool _harmonyTriedHardware = false;
   bool _harmonyTriedSoftware = false;
+  bool _usingHarmonyNative = false;
   bool _loading = true;
   bool _waitingForFirstFrame = false;
   bool _vlcBroken = false;
+
+  static const MethodChannel _harmonyChannel = MethodChannel('harmony_avplayer');
 
 
 
@@ -640,6 +643,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _playbackWatchdog?.cancel();
     _controller?.dispose();
     _vlcController?.dispose();
+    unawaited(_stopHarmonyNative());
     WakelockPlus.disable();
     _deleteCache();
     super.dispose();
@@ -781,6 +785,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
       _currentSource = updated;
 
+      if (_isHarmonyDevice) {
+        await _playWithHarmonyNative(playUrl);
+        return;
+      }
+
       final preferVlc = !_vlcBroken && (_useVlcPlayer || _decoderPreference != DecoderPreference.native);
 
       if (preferVlc) {
@@ -900,6 +909,61 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         message.contains('decoder') ||
         message.contains('hardware') ||
         message.contains('codec');
+  }
+
+  Future<void> _playWithHarmonyNative(String playUrl, {bool preferSoftware = false}) async {
+    if (!_isHarmonyDevice) {
+      throw Exception('not harmony device');
+    }
+    _usingHarmonyNative = true;
+    _waitingForFirstFrame = false;
+    _stopPlaybackWatchdog();
+    _controller?.dispose();
+    _controller = null;
+    _vlcController?.dispose();
+    _vlcController = null;
+    if (preferSoftware) {
+      _harmonyTriedSoftware = true;
+    } else {
+      _harmonyTriedHardware = true;
+    }
+    final headers = _defaultHeaders(_currentPlayPageUrl ?? playUrl);
+    final args = {
+      'url': playUrl,
+      'headers': headers,
+      'referer': headers['Referer'] ?? _currentPlayPageUrl ?? kBaseHost,
+      'userAgent': headers['User-Agent'] ?? 'Mozilla/5.0',
+      'decoder': preferSoftware ? 'software' : 'hardware',
+      'title': widget.item.title,
+    };
+    try {
+      await _harmonyChannel.invokeMethod('play', args);
+      if (!mounted) return;
+      setState(() {
+        _autoSwitchCount = 0;
+        _loading = false;
+        _error = null;
+        _usingHarmonyNative = true;
+      });
+    } catch (e) {
+      if (!preferSoftware && !_harmonyTriedSoftware) {
+        await _playWithHarmonyNative(playUrl, preferSoftware: true);
+        return;
+      }
+      if (!mounted) return;
+      setState(() {
+        _loading = false;
+        _error = _safeErrorMessage(e, isPlay: true);
+        _usingHarmonyNative = false;
+      });
+    }
+  }
+
+  Future<void> _stopHarmonyNative() async {
+    if (!_isHarmonyDevice) return;
+    try {
+      await _harmonyChannel.invokeMethod('stop');
+    } catch (_) {}
   }
 
   Future<void> _playWithVlc(String playUrl, {bool preferSoftware = false}) async {
@@ -1118,6 +1182,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
 
     if (!Platform.isAndroid) return false;
+    if (_isHarmonyDevice) return false;
     if (_vlcBroken) return false;
     if (playUrl == null || playUrl.isEmpty) return false;
     if (!_shouldFallbackToVlc(error)) return false;
@@ -1159,7 +1224,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           return;
         }
       } else {
-        if (Platform.isAndroid) {
+        if (Platform.isAndroid && !_isHarmonyDevice) {
           _waitingForFirstFrame = true;
           await _playWithVlc(
             playUrl,
@@ -1190,6 +1255,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   Future<void> _resetPlayer() async {
     _stopPlaybackWatchdog();
     _waitingForFirstFrame = false;
+    _usingHarmonyNative = false;
+    await _stopHarmonyNative();
     if (_isHarmonyDevice) {
       _harmonyTriedHardware = false;
       _harmonyTriedSoftware = false;
@@ -1462,28 +1529,58 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                     ],
                   ),
                 )
-              : (useVlc ? _vlcController == null : _controller == null)
+              : _usingHarmonyNative
                   ? Center(
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Text('播放器未就绪'),
-                          const SizedBox(height: 10),
+                          const Text('已调用鸿蒙原生播放器', style: TextStyle(color: Colors.white70)),
+                          const SizedBox(height: 8),
+                          const Text('退出全屏后可在此切源或重试', style: TextStyle(color: Colors.white38)),
+                          const SizedBox(height: 12),
                           ElevatedButton.icon(
                             onPressed: () {
                               setState(() {
                                 _loading = true;
                                 _error = null;
+                                _usingHarmonyNative = false;
                               });
                               _initPlayer();
                             },
                             icon: const Icon(Icons.refresh_rounded),
                             label: const Text('重试'),
                           ),
+                          const SizedBox(height: 10),
+                          OutlinedButton.icon(
+                            onPressed: _showSourceSheet,
+                            icon: const Icon(Icons.swap_horiz_rounded),
+                            label: const Text('切换视频源'),
+                          ),
                         ],
                       ),
                     )
-                  : ListView(
+                  : (useVlc ? _vlcController == null : _controller == null)
+                      ? Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Text('播放器未就绪'),
+                              const SizedBox(height: 10),
+                              ElevatedButton.icon(
+                                onPressed: () {
+                                  setState(() {
+                                    _loading = true;
+                                    _error = null;
+                                  });
+                                  _initPlayer();
+                                },
+                                icon: const Icon(Icons.refresh_rounded),
+                                label: const Text('重试'),
+                              ),
+                            ],
+                          ),
+                        )
+                      : ListView(
                       padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
                       children: [
                         AspectRatio(
@@ -2282,10 +2379,18 @@ class DeviceProfileManager {
       final isHuawei = [brand, manufacturer, device, model, product].any(
         (v) => v.contains('huawei') || v.contains('honor'),
       );
-      final isHarmony = display.contains('harmony') ||
-          display.contains('hongmeng') ||
-          display.contains('hm') ||
-          isHuawei;
+      final fingerprint = lower(info.fingerprint);
+      final incremental = lower(info.version.incremental);
+      final release = lower(info.version.release);
+      final harmonyHints = '$display $fingerprint $incremental $release';
+      final isHarmony = isHuawei && _containsAny(harmonyHints, [
+        'harmony',
+        'harmonyos',
+        'hongmeng',
+        'hmos',
+        'ohos',
+        '鸿蒙',
+      ]);
 
       final deviceHints = '$brand $manufacturer $model $device $product $hardware'.toLowerCase();
       final isTvBox = _containsAny(deviceHints, [

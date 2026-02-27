@@ -11,7 +11,7 @@ git push
 
 
 git add -A
-git commit -m "播放器兼容版本"
+git commit -m "安卓鸿蒙兼容版本"
 git push origin main
 
 本机调试
