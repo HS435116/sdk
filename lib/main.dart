@@ -878,8 +878,21 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (preferSoftware) {
       advanced.add('--avcodec-hw=none');
     }
-    final options = VlcPlayerOptions(advanced: VlcAdvancedOptions(advanced));
+    final headers = _defaultHeaders(url);
+    final referrer = headers['Referer'] ?? kBaseHost;
+    final userAgent = headers['User-Agent'] ?? 'Mozilla/5.0';
+    final options = VlcPlayerOptions(
+      advanced: VlcAdvancedOptions(advanced),
+      http: VlcHttpOptions([
+        VlcHttpOptions.httpReconnect(true),
+        VlcHttpOptions.httpContinuous(true),
+        VlcHttpOptions.httpForwardCookies(true),
+        VlcHttpOptions.httpReferrer(referrer),
+        VlcHttpOptions.httpUserAgent(userAgent),
+      ]),
+    );
     final controller = VlcPlayerController.network(
+
       url,
       hwAcc: HwAcc.auto,
       autoPlay: true,
@@ -934,7 +947,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   void _startPlaybackWatchdog(String playUrl, {required bool usingVlc, required bool preferSoftware}) {
     _playbackWatchdog?.cancel();
     final requestId = ++_playRequestId;
-    _playbackWatchdog = Timer(const Duration(seconds: 15), () async {
+    final timeout = _isHarmonyDevice ? 25 : 15;
+    _playbackWatchdog = Timer(Duration(seconds: timeout), () async {
+
       if (!mounted || requestId != _playRequestId) return;
       if (!_waitingForFirstFrame) return;
       if (usingVlc) {

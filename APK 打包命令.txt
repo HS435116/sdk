@@ -17,3 +17,16 @@ git push origin main
 本机调试
 flutter pub get
 flutter run -d windows（PC 调试）
+
+
+清理签名不一致
+
+adb shell pm list users
+adb shell pm list packages | findstr com.example.sdk
+再输入清理残余
+adb shell pm list packages --user 0 | findstr com.example.sdk
+adb shell pm list packages --user 10 | findstr com.example.sdk
+adb shell pm uninstall --user 10 com.example.sdk
+adb shell pm list packages --user 10 | findstr com.example.sdk
+
+
