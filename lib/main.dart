@@ -100,6 +100,8 @@ class _HomePageState extends State<HomePage> {
   String _currentUrl = kDefaultListUrl;
   String? _error;
   PageData? _pageData;
+  List<HistoryEntry> _history = [];
+  bool _historyLoading = false;
 
   @override
   void initState() {
@@ -107,6 +109,7 @@ class _HomePageState extends State<HomePage> {
     _isDesktop = _detectDesktop();
     _debugWidth = _isDesktop ? 420 : null;
     _loadPage(_currentUrl);
+    _loadHistory();
     if (_isDesktop) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _openDebugDialog();
@@ -141,6 +144,20 @@ class _HomePageState extends State<HomePage> {
         _loading = false;
       });
 
+    }
+  }
+
+  Future<void> _loadHistory() async {
+    if (_historyLoading) return;
+    _historyLoading = true;
+    try {
+      final list = await HistoryStore.load();
+      if (!mounted) return;
+      setState(() {
+        _history = list;
+      });
+    } finally {
+      _historyLoading = false;
     }
   }
 
@@ -197,6 +214,7 @@ class _HomePageState extends State<HomePage> {
               slivers: [
                 SliverToBoxAdapter(child: _buildHeader()),
                 SliverToBoxAdapter(child: _buildFilters()),
+                SliverToBoxAdapter(child: _buildHistorySection()),
                 SliverPadding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
                   sliver: content,
@@ -336,6 +354,84 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
+  Widget _buildHistorySection() {
+    if (_history.isEmpty) {
+      return const SizedBox(height: 6);
+    }
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Text('观看历史', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+              const Spacer(),
+              TextButton(
+                onPressed: () async {
+                  await HistoryStore.clear();
+                  if (!mounted) return;
+                  setState(() {
+                    _history = [];
+                  });
+                },
+                child: const Text('清空历史记录'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          SizedBox(
+            height: 150,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              itemCount: _history.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 12),
+              itemBuilder: (context, index) {
+                final entry = _history[index];
+                return GestureDetector(
+                  onTap: () async {
+                    await Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => PlayerPage(item: entry.toVideoItem())),
+                    );
+                    await _loadHistory();
+                  },
+                  child: SizedBox(
+                    width: 96,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: entry.coverUrl.isNotEmpty
+                                ? CachedNetworkImage(
+                                    imageUrl: entry.coverUrl,
+                                    fit: BoxFit.cover,
+                                    placeholder: (context, url) => Container(color: const Color(0xFF333333)),
+                                    errorWidget: (context, url, error) => Container(color: const Color(0xFF333333)),
+                                  )
+                                : Container(color: const Color(0xFF333333)),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          entry.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   SliverGrid _buildContent() {
     final items = _pageData?.items ?? [];
     return SliverGrid(
@@ -344,12 +440,13 @@ class _HomePageState extends State<HomePage> {
           final item = items[index];
           return _VideoCard(
             item: item,
-            onTap: () {
-              Navigator.of(context).push(
+            onTap: () async {
+              await Navigator.of(context).push(
                 MaterialPageRoute(
                   builder: (_) => PlayerPage(item: item),
                 ),
               );
+              await _loadHistory();
             },
           );
         },
@@ -626,6 +723,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _isDesktop = _detectDesktop();
     WakelockPlus.enable();
+    unawaited(HistoryStore.add(widget.item));
     _initDeviceProfile().whenComplete(_initPlayer);
   }
 
@@ -2170,6 +2268,127 @@ class EpisodeItem {
   EpisodeItem({required this.name, required this.playUrl});
   final String name;
   final String playUrl;
+}
+
+class HistoryEntry {
+  HistoryEntry({
+    required this.title,
+    required this.detailUrl,
+    required this.coverUrl,
+    required this.subTitle,
+    required this.badge,
+    required this.updatedAt,
+  });
+
+  final String title;
+  final String detailUrl;
+  final String coverUrl;
+  final String subTitle;
+  final String badge;
+  final int updatedAt;
+
+  Map<String, dynamic> toJson() {
+    return {
+      'title': title,
+      'detailUrl': detailUrl,
+      'coverUrl': coverUrl,
+      'subTitle': subTitle,
+      'badge': badge,
+      'updatedAt': updatedAt,
+    };
+  }
+
+  factory HistoryEntry.fromJson(Map<String, dynamic> json) {
+    return HistoryEntry(
+      title: (json['title'] ?? '').toString(),
+      detailUrl: (json['detailUrl'] ?? '').toString(),
+      coverUrl: (json['coverUrl'] ?? '').toString(),
+      subTitle: (json['subTitle'] ?? '').toString(),
+      badge: (json['badge'] ?? '').toString(),
+      updatedAt: int.tryParse((json['updatedAt'] ?? '0').toString()) ?? 0,
+    );
+  }
+
+  VideoItem toVideoItem() {
+    return VideoItem(
+      title: title,
+      detailUrl: detailUrl,
+      coverUrl: coverUrl,
+      subTitle: subTitle,
+      badge: badge,
+    );
+  }
+}
+
+class HistoryStore {
+  static const int _maxItems = 12;
+
+  static Future<File> _file() async {
+    final dir = await getApplicationDocumentsDirectory();
+    final profile = DeviceProfileManager.instance.profile;
+    final key = _deviceKey(profile);
+    return File('${dir.path}/history_$key.json');
+  }
+
+  static String _deviceKey(DeviceProfile? profile) {
+    if (profile == null) return 'default';
+    final parts = [
+      profile.brand,
+      profile.model,
+      profile.device,
+      profile.product,
+      profile.sdkInt?.toString() ?? '',
+    ].where((e) => e.isNotEmpty).toList();
+    if (parts.isEmpty) return 'default';
+    final raw = parts.join('_').toLowerCase();
+    return raw.replaceAll(RegExp(r'[^a-z0-9_\-]+'), '_');
+  }
+
+  static Future<List<HistoryEntry>> load() async {
+    try {
+      final file = await _file();
+      if (!await file.exists()) return [];
+      final content = await file.readAsString();
+      final data = jsonDecode(content);
+      if (data is! List) return [];
+      return data.map((e) => HistoryEntry.fromJson((e as Map).cast<String, dynamic>())).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  static Future<void> save(List<HistoryEntry> list) async {
+    final file = await _file();
+    final data = list.map((e) => e.toJson()).toList();
+    await file.writeAsString(jsonEncode(data));
+  }
+
+  static Future<void> add(VideoItem item) async {
+    final list = await load();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final updated = <HistoryEntry>[
+      HistoryEntry(
+        title: item.title,
+        detailUrl: item.detailUrl,
+        coverUrl: item.coverUrl,
+        subTitle: item.subTitle,
+        badge: item.badge,
+        updatedAt: now,
+      ),
+      ...list.where((e) => e.detailUrl != item.detailUrl),
+    ];
+    if (updated.length > _maxItems) {
+      updated.removeRange(_maxItems, updated.length);
+    }
+    await save(updated);
+  }
+
+  static Future<void> clear() async {
+    final file = await _file();
+    if (await file.exists()) {
+      await file.delete();
+    }
+  }
 }
 
 class PlayMeta {

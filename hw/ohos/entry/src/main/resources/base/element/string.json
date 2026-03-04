@@ -1,0 +1,7 @@
+{
+  "string": [
+    { "name": "app_name", "value": "晨曦影视" },
+    { "name": "module_desc", "value": "entry module" },
+    { "name": "main_ability_desc", "value": "main ability" }
+  ]
+}
