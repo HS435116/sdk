@@ -11,7 +11,7 @@ git push
 
 
 git add -A
-git commit -m "低端安卓鸿蒙兼容版本"
+git commit -m "低端-安卓-鸿蒙-兼容版本"
 git push origin main
 
 本机调试
