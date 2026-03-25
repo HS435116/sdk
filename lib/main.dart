@@ -19,8 +19,12 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:flutter_vlc_player/flutter_vlc_player.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 import 'package:device_info_plus/device_info_plus.dart';
+
 import 'package:google_fonts/google_fonts.dart';
+
 
 
 
@@ -42,8 +46,10 @@ class _TrustAllHttpOverrides extends HttpOverrides {
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   HttpOverrides.global = _TrustAllHttpOverrides();
+  MediaKit.ensureInitialized();
 
   await DeviceProfileManager.instance.init();
+
 
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
 
@@ -680,15 +686,26 @@ class PlayerPage extends StatefulWidget {
 class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   VideoPlayerController? _controller;
   VlcPlayerController? _vlcController;
+  Player? _ijkPlayer;
+  VideoController? _ijkVideoController;
+  StreamSubscription<String>? _ijkErrorSubscription;
   bool _useVlcPlayer = false;
+  bool _useIjkPlayer = false;
   bool _isHarmonyDevice = false;
+  bool _isLegacyAndroid = false;
+  bool _forceVlcOnly = false;
   DecoderPreference _decoderPreference = DecoderPreference.native;
   bool _preferVlcSoftware = false;
+  bool _preferIjkSoftware = false;
   bool _harmonyTriedHardware = false;
   bool _harmonyTriedSoftware = false;
   bool _loading = true;
   bool _waitingForFirstFrame = false;
   bool _vlcBroken = false;
+  bool _ijkBroken = false;
+  bool _ijkErrorHandled = false;
+
+
 
 
 
@@ -738,10 +755,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _playbackWatchdog?.cancel();
     _controller?.dispose();
     _vlcController?.dispose();
+    unawaited(_disposeIjkPlayer());
     WakelockPlus.disable();
     _deleteCache();
     super.dispose();
   }
+
 
 
 
@@ -757,19 +776,39 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     final profile = DeviceProfileManager.instance.profile;
     if (profile == null || !profile.isAndroid) return;
     _isHarmonyDevice = profile.isHarmony;
+    _isLegacyAndroid = (profile.sdkInt ?? 999) <= 21;
+    _forceVlcOnly = _isLegacyAndroid;
     _decoderPreference = profile.decoderPreference;
     _preferVlcSoftware = profile.decoderPreference == DecoderPreference.vlcSoftware;
+    _preferIjkSoftware = profile.decoderPreference == DecoderPreference.ijkSoftware;
     if (_isHarmonyDevice) {
+      _ijkBroken = false;
       _vlcBroken = false;
+      _useIjkPlayer = true;
+      _useVlcPlayer = false;
+      _preferIjkSoftware = true;
+      _preferVlcSoftware = true;
+      _decoderPreference = DecoderPreference.ijkSoftware;
+      return;
+    }
+    if (_isLegacyAndroid) {
+      _vlcBroken = false;
+      _useIjkPlayer = false;
       _useVlcPlayer = true;
       _preferVlcSoftware = true;
       _decoderPreference = DecoderPreference.vlcSoftware;
+      return;
+    }
+    if (_decoderPreference == DecoderPreference.ijkSoftware) {
+      _useIjkPlayer = true;
+      _useVlcPlayer = false;
       return;
     }
     if (_decoderPreference != DecoderPreference.native) {
       _useVlcPlayer = true;
     }
   }
+
 
 
 
@@ -855,16 +894,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       final playPageUrl = source.playPageUrl;
       _currentPlayPageUrl = playPageUrl ?? widget.item.detailUrl;
       if (playUrl == null && playPageUrl != null && _isValidPlayPageUrl(playPageUrl)) {
-
-
-        final playResp = await http.get(
-          Uri.parse(toAbsUrl(playPageUrl)),
-          headers: _defaultHeaders(playPageUrl),
-        );
-        if (playResp.statusCode == 200) {
-          playUrl = _parsePlayUrlFromHtml(playResp.body);
-        }
+        final playHtml = await _fetchHtml(playPageUrl, referer: widget.item.detailUrl);
+        playUrl = _parsePlayUrlFromHtml(playHtml);
       }
+
 
       if (playUrl != null && !playUrl.startsWith('http')) {
         playUrl = toAbsUrl(playUrl);
@@ -880,11 +913,25 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
       _currentSource = updated;
 
-      final preferVlc = !_vlcBroken && (_useVlcPlayer || _decoderPreference != DecoderPreference.native);
+      final preferIjk = !_ijkBroken && (_useIjkPlayer || _decoderPreference == DecoderPreference.ijkSoftware);
+      if (preferIjk) {
+        _waitingForFirstFrame = true;
+        _startPlaybackWatchdog(playUrl, usingVlc: false, usingIjk: true, preferSoftware: _preferIjkSoftware);
+        await _playWithIjk(playUrl, preferSoftware: _preferIjkSoftware);
+        if (!mounted) return;
+        setState(() {
+          _autoSwitchCount = 0;
+          _loading = false;
+          _error = null;
+        });
+        return;
+      }
+
+      final preferVlc = !_vlcBroken && (_forceVlcOnly || _useVlcPlayer || _decoderPreference == DecoderPreference.vlcHardware || _decoderPreference == DecoderPreference.vlcSoftware);
 
       if (preferVlc) {
         _waitingForFirstFrame = true;
-        _startPlaybackWatchdog(playUrl, usingVlc: true, preferSoftware: _preferVlcSoftware);
+        _startPlaybackWatchdog(playUrl, usingVlc: true, usingIjk: false, preferSoftware: _preferVlcSoftware);
         await _playWithVlc(playUrl, preferSoftware: _preferVlcSoftware);
         if (!mounted) return;
         setState(() {
@@ -898,7 +945,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
 
 
-      _startPlaybackWatchdog(playUrl, usingVlc: false, preferSoftware: false);
+      _startPlaybackWatchdog(playUrl, usingVlc: false, usingIjk: false, preferSoftware: false);
+
       final isHls = playUrl.toLowerCase().contains('.m3u8');
 
       final controller = isHls
@@ -1001,11 +1049,125 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         message.contains('codec');
   }
 
+  Future<void> _disposeIjkPlayer() async {
+    final errorSubscription = _ijkErrorSubscription;
+    _ijkErrorSubscription = null;
+    if (errorSubscription != null) {
+      await errorSubscription.cancel();
+    }
+    _ijkVideoController = null;
+    final player = _ijkPlayer;
+    _ijkPlayer = null;
+    if (player == null) return;
+    try {
+      await player.stop();
+    } catch (_) {}
+    try {
+      await player.dispose();
+    } catch (_) {}
+  }
+
+  Future<void> _playWithIjk(String playUrl, {bool preferSoftware = true}) async {
+    _waitingForFirstFrame = true;
+    _ijkErrorHandled = false;
+    _controller?.dispose();
+    _controller = null;
+    _vlcController?.dispose();
+    _vlcController = null;
+    await _disposeIjkPlayer();
+
+    final headers = _defaultHeaders(_currentPlayPageUrl ?? playUrl);
+    var targetUrl = playUrl;
+    if (playUrl.toLowerCase().contains('.m3u8')) {
+      _proxyServer = await HlsProxyServer.start(playUrl, headers: headers);
+      _cacheDir = _proxyServer!.cacheDir;
+      targetUrl = _proxyServer!.indexUrl;
+    }
+
+    final player = Player();
+    final controller = VideoController(
+      player,
+      configuration: VideoControllerConfiguration(
+        enableHardwareAcceleration: !preferSoftware,
+        hwdec: preferSoftware ? 'no' : 'auto-safe',
+        androidAttachSurfaceAfterVideoParameters: true,
+      ),
+    );
+
+    _ijkPlayer = player;
+    _ijkVideoController = controller;
+    _useIjkPlayer = true;
+    _useVlcPlayer = false;
+
+    _ijkErrorSubscription = player.stream.error.listen((message) {
+      if (_ijkErrorHandled || !mounted || !identical(_ijkPlayer, player)) return;
+      _ijkErrorHandled = true;
+      _stopPlaybackWatchdog();
+      unawaited(_handleIjkError(Exception(message), playUrl));
+    });
+
+    unawaited(
+      controller.waitUntilFirstFrameRendered.then((_) {
+        if (!mounted || !identical(_ijkVideoController, controller)) return;
+        _stopPlaybackWatchdog();
+        if (_loading || _waitingForFirstFrame) {
+          setState(() {
+            _waitingForFirstFrame = false;
+            _loading = false;
+            _error = null;
+          });
+        }
+      }).catchError((_) {}),
+    );
+
+    try {
+      await player.open(
+        Media(targetUrl, httpHeaders: headers),
+        play: true,
+      );
+    } catch (e) {
+      _ijkErrorHandled = true;
+      await _handleIjkError(e, playUrl);
+    }
+  }
+
+  Future<void> _handleIjkError(Object error, String playUrl) async {
+    final message = error.toString().toLowerCase();
+    if (message.contains('channel-error') ||
+        message.contains('unable to establish connection on channel') ||
+        message.contains('missingpluginexception')) {
+      _ijkBroken = true;
+    }
+    _useIjkPlayer = false;
+    await _disposeIjkPlayer();
+    if (!_vlcBroken) {
+      _preferVlcSoftware = true;
+      _decoderPreference = DecoderPreference.vlcSoftware;
+      await _playWithVlc(playUrl, preferSoftware: true);
+      return;
+    }
+    if (!_forceVlcOnly) {
+      _decoderPreference = DecoderPreference.native;
+      await _playNativeFallback(playUrl);
+      return;
+    }
+    if (!mounted) return;
+    setState(() {
+      _waitingForFirstFrame = false;
+      _loading = false;
+      _error = _safeErrorMessage(error, isPlay: true);
+    });
+  }
+
+
   Future<void> _playWithVlc(String playUrl, {bool preferSoftware = false}) async {
+
 
     final url = playUrl;
     _waitingForFirstFrame = true;
+    await _disposeIjkPlayer();
     _vlcController?.dispose();
+
     if (_isHarmonyDevice) {
       if (preferSoftware) {
         _harmonyTriedSoftware = true;
@@ -1077,9 +1239,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     });
     _vlcController = controller;
 
+    _useIjkPlayer = false;
     _useVlcPlayer = true;
 
     await _initializeVlcController(controller, url);
+
   }
 
   Future<void> _initializeVlcController(VlcPlayerController controller, String playUrl) async {
@@ -1110,9 +1274,18 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
     if (_vlcBroken) {
       _useVlcPlayer = false;
-      _decoderPreference = DecoderPreference.native;
       _vlcController?.dispose();
       _vlcController = null;
+      if (_forceVlcOnly) {
+        if (!mounted) return;
+        setState(() {
+          _waitingForFirstFrame = false;
+          _loading = false;
+          _error = '当前设备仅支持VLC软解播放，请切换视频源重试';
+        });
+        return;
+      }
+      _decoderPreference = DecoderPreference.native;
       await _playNativeFallback(playUrl);
       return;
     }
@@ -1131,9 +1304,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   Future<void> _playNativeFallback(String playUrl) async {
+    if (_forceVlcOnly) {
+      throw Exception('legacy device requires vlc only');
+    }
     try {
       _waitingForFirstFrame = true;
-      _startPlaybackWatchdog(playUrl, usingVlc: false, preferSoftware: false);
+      _useIjkPlayer = false;
+      _useVlcPlayer = false;
+      await _disposeIjkPlayer();
+      _startPlaybackWatchdog(playUrl, usingVlc: false, usingIjk: false, preferSoftware: false);
+
       final isHls = playUrl.toLowerCase().contains('.m3u8');
       final controller = isHls
           ? await _prepareHlsController(playUrl)
@@ -1241,14 +1421,25 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  void _startPlaybackWatchdog(String playUrl, {required bool usingVlc, required bool preferSoftware}) {
+  void _startPlaybackWatchdog(
+    String playUrl, {
+    required bool usingVlc,
+    required bool usingIjk,
+    required bool preferSoftware,
+  }) {
     _playbackWatchdog?.cancel();
     final requestId = ++_playRequestId;
     final timeout = _isHarmonyDevice ? 25 : 15;
     _playbackWatchdog = Timer(Duration(seconds: timeout), () async {
-
       if (!mounted || requestId != _playRequestId) return;
       if (!_waitingForFirstFrame) return;
+      if (usingIjk) {
+        _preferVlcSoftware = true;
+        _decoderPreference = DecoderPreference.vlcSoftware;
+        _waitingForFirstFrame = true;
+        await _playWithVlc(playUrl, preferSoftware: true);
+        return;
+      }
       if (usingVlc) {
         if (!preferSoftware) {
           _preferVlcSoftware = true;
@@ -1279,8 +1470,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         _error = '播放超时，请重试或切换视频源';
       });
     });
-
   }
+
 
   void _stopPlaybackWatchdog() {
     _playbackWatchdog?.cancel();
@@ -1289,6 +1480,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   Future<void> _resetPlayer() async {
     _stopPlaybackWatchdog();
     _waitingForFirstFrame = false;
+    _ijkErrorHandled = false;
     if (_isHarmonyDevice) {
       _harmonyTriedHardware = false;
       _harmonyTriedSoftware = false;
@@ -1303,11 +1495,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _controller = null;
     _vlcController?.dispose();
     _vlcController = null;
+    await _disposeIjkPlayer();
     await _deleteCache();
 
     _cachedFile = null;
     _cacheDir = null;
   }
+
 
 
 
@@ -1460,7 +1654,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   Future<void> _openFullscreen() async {
+    if (_useIjkPlayer && _ijkVideoController != null) {
+      return;
+    }
     final vlc = _vlcController;
+
     if (_useVlcPlayer && vlc != null) {
       await Navigator.of(context).push(
         MaterialPageRoute(
@@ -1477,6 +1675,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
     final controller = _controller;
     if (controller == null) return;
+
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => _FullscreenPlayerPage(
@@ -1492,11 +1691,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    final useVlc = _useVlcPlayer && !_vlcBroken && _vlcController != null;
+    final useIjk = _useIjkPlayer && _ijkPlayer != null && _ijkVideoController != null;
+    final useVlc = !useIjk && _useVlcPlayer && !_vlcBroken && _vlcController != null;
 
     final vlcAspect = useVlc && _vlcController!.value.aspectRatio > 0
         ? _vlcController!.value.aspectRatio
         : 16 / 9;
+    final ijkAspect = 16 / 9;
+
+
 
     return Scaffold(
 
@@ -1535,17 +1738,20 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                       ),
                       const SizedBox(height: 12),
                       ElevatedButton.icon(
-                        onPressed: () {
+                        onPressed: () async {
                           _controller?.dispose();
                           _controller = null;
                           _vlcController?.dispose();
                           _vlcController = null;
+                          await _disposeIjkPlayer();
+                          if (!mounted) return;
                           setState(() {
                             _loading = true;
                             _error = null;
                           });
-                          _initPlayer();
+                          await _initPlayer();
                         },
+
 
                         icon: const Icon(Icons.refresh_rounded),
                         label: const Text('重试'),
@@ -1561,8 +1767,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                     ],
                   ),
                 )
-              : (useVlc ? _vlcController == null : _controller == null)
+              : ((useIjk && _ijkVideoController == null) || (useVlc ? _vlcController == null : (!useIjk && _controller == null)))
                       ? Center(
+
                           child: Column(
                             mainAxisSize: MainAxisSize.min,
                             children: [
@@ -1586,29 +1793,41 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                       padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
                       children: [
                         AspectRatio(
-                          aspectRatio: useVlc ? vlcAspect : _controller!.value.aspectRatio,
-                          child: useVlc
-                              ? VlcPlayer(
-                                  controller: _vlcController!,
-                                  aspectRatio: vlcAspect,
-                                  virtualDisplay: !_isHarmonyDevice,
-                                  placeholder: const Center(child: CircularProgressIndicator()),
+                          aspectRatio: useIjk
+                              ? ijkAspect
+                              : (useVlc ? vlcAspect : _controller!.value.aspectRatio),
+                          child: useIjk
+                              ? Video(
+                                  controller: _ijkVideoController!,
+                                  fit: BoxFit.contain,
+                                  fill: Colors.black,
+                                  controls: AdaptiveVideoControls,
                                 )
+                              : useVlc
 
-                              : VideoPlayer(_controller!),
+                                  ? VlcPlayer(
+                                      controller: _vlcController!,
+                                      aspectRatio: vlcAspect,
+                                      virtualDisplay: !_isHarmonyDevice,
+                                      placeholder: const Center(child: CircularProgressIndicator()),
+                                    )
+                                  : VideoPlayer(_controller!),
                         ),
                         const SizedBox(height: 8),
-                        useVlc
-                            ? _VlcControls(
-                                controller: _vlcController!,
-                                onToggleFullscreen: _openFullscreen,
-                                isFullscreen: false,
-                              )
-                            : _PlayerControls(
-                                controller: _controller!,
-                                onToggleFullscreen: _openFullscreen,
-                                isFullscreen: false,
-                              ),
+                        useIjk
+                            ? const SizedBox.shrink()
+                            : useVlc
+                                ? _VlcControls(
+                                    controller: _vlcController!,
+                                    onToggleFullscreen: _openFullscreen,
+                                    isFullscreen: false,
+                                  )
+                                : _PlayerControls(
+                                    controller: _controller!,
+                                    onToggleFullscreen: _openFullscreen,
+                                    isFullscreen: false,
+                                  ),
+
 
 
                         if (_episodes.isNotEmpty) ...[
@@ -2414,7 +2633,8 @@ class _SourceEpisodeBundle {
 
 
 
-enum DecoderPreference { native, vlcHardware, vlcSoftware }
+enum DecoderPreference { native, vlcHardware, vlcSoftware, ijkSoftware }
+
 
 class DeviceProfile {
   DeviceProfile({
@@ -2541,16 +2761,19 @@ class DeviceProfileManager {
       ]);
 
       final is32Only = abis.isNotEmpty && !abis.any((a) => a.contains('arm64') || a.contains('x86_64'));
-      final isLowEnd = (sdkInt <= 25) || is32Only || _containsAny(deviceHints, ['amlogic', 'rockchip', 'mstar', 'allwinner']);
+      final isLowEnd = (sdkInt <= 25) ||
+          is32Only ||
+          _containsAny(deviceHints, ['s10-231w', 'amlogic', 'rockchip', 'mstar', 'allwinner']);
 
       DecoderPreference decoderPreference = DecoderPreference.native;
       if (isHarmony) {
-        decoderPreference = DecoderPreference.native;
+        decoderPreference = DecoderPreference.ijkSoftware;
       } else if (isLowEnd) {
         decoderPreference = DecoderPreference.vlcSoftware;
       } else if (isTvBox) {
         decoderPreference = DecoderPreference.vlcHardware;
       }
+
 
       _profile = DeviceProfile(
         isAndroid: true,
@@ -2628,13 +2851,9 @@ String _safeErrorMessage(Object error, {required bool isPlay}) {
 
 
 Future<PageData> fetchPage(String url) async {
+  final html = await _fetchHtml(url);
+  final doc = html_parser.parse(html);
 
-  final resp = await http.get(Uri.parse(url), headers: _defaultHeaders(url));
-  if (resp.statusCode != 200) {
-    throw Exception('HTTP ${resp.statusCode}');
-  }
-
-  final doc = html_parser.parse(resp.body);
   final items = <VideoItem>[];
   final listNodes = doc.querySelectorAll('ul.vodlist li.vodlist_item');
   for (final node in listNodes) {
@@ -2689,12 +2908,13 @@ String toAbsUrl(String url) {
 }
 
 Future<PlayMeta> fetchPlayMeta(String detailUrl) async {
-  final detailResp = await http.get(Uri.parse(detailUrl), headers: _defaultHeaders(detailUrl));
-  if (detailResp.statusCode != 200) {
+  String detailHtml;
+  try {
+    detailHtml = await _fetchHtml(detailUrl);
+  } catch (_) {
     return PlayMeta(sources: [], episodes: [], sourceEpisodes: {});
   }
 
-  final detailHtml = detailResp.body;
 
   final sources = <PlaySource>[];
   final direct = _parsePlayUrlFromHtml(detailHtml);
@@ -3062,10 +3282,42 @@ Map<String, String> _defaultHeaders([String? referer]) {
     'User-Agent': 'Mozilla/5.0 (Linux; Android 10; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36',
     'Referer': ref,
     'Origin': kBaseHost,
-    'Accept': '*/*',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
     'Accept-Language': 'zh-CN,zh;q=0.9',
+    'Connection': 'keep-alive',
+    'Cache-Control': 'no-cache',
   };
 }
+
+String _decodeHtmlBytes(List<int> bytes) {
+  try {
+    return utf8.decode(bytes);
+  } catch (_) {
+    return latin1.decode(bytes);
+  }
+}
+
+Future<String> _fetchHtml(String url, {String? referer}) async {
+  final targetUrl = toAbsUrl(url);
+  final headers = _defaultHeaders(referer ?? targetUrl);
+  try {
+    final dio = createDio(headers: headers);
+    final resp = await dio.get<List<int>>(
+      targetUrl,
+      options: Options(responseType: ResponseType.bytes, headers: headers),
+    );
+    if (resp.statusCode != null && resp.statusCode! >= 200 && resp.statusCode! < 300) {
+      return _decodeHtmlBytes(resp.data ?? const <int>[]);
+    }
+  } catch (_) {}
+
+  final resp = await http.get(Uri.parse(targetUrl), headers: headers);
+  if (resp.statusCode < 200 || resp.statusCode >= 300) {
+    throw Exception('HTTP ${resp.statusCode}');
+  }
+  return _decodeHtmlBytes(resp.bodyBytes);
+}
+
 
 Future<File> downloadToTemp(String url) async {
   final dir = await getTemporaryDirectory();
@@ -3078,11 +3330,21 @@ Future<File> downloadToTemp(String url) async {
 }
 
 Dio createDio({Map<String, String>? headers}) {
-  final dio = Dio();
+  final dio = Dio(
+    BaseOptions(
+      connectTimeout: const Duration(seconds: 12),
+      receiveTimeout: const Duration(seconds: 20),
+      sendTimeout: const Duration(seconds: 12),
+      followRedirects: true,
+      maxRedirects: 5,
+      responseType: ResponseType.bytes,
+    ),
+  );
   if (headers != null) {
     dio.options.headers.addAll(headers);
   }
   final adapter = dio.httpClientAdapter;
+
   if (adapter is IOHttpClientAdapter) {
     adapter.createHttpClient = () {
       final client = HttpClient();
