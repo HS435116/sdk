@@ -44,11 +44,33 @@ jobs:
         run: |
           1..100 | ForEach-Object { 'y' } | & "$env:ANDROID_SDK_ROOT\cmdline-tools\latest\bin\sdkmanager.bat" --licenses
 
-      - name: Build Release APK
-        run: flutter build apk --release
+      - name: Prepare APK output directory
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
 
-      - name: Upload APK
+      - name: Build universal release APK
+        run: flutter build apk --release --target-platform android-arm,android-arm64
+
+      - name: Save universal APK
+        shell: pwsh
+        run: |
+          Copy-Item build\app\outputs\flutter-apk\app-release.apk dist\chenxi-universal-release.apk -Force
+
+      - name: Build split ABI release APKs
+        run: flutter build apk --release --target-platform android-arm,android-arm64 --split-per-abi
+
+      - name: Save split APKs
+        shell: pwsh
+        run: |
+          Copy-Item build\app\outputs\flutter-apk\app-armeabi-v7a-release.apk dist\chenxi-armeabi-v7a-release.apk -Force
+          Copy-Item build\app\outputs\flutter-apk\app-arm64-v8a-release.apk dist\chenxi-arm64-v8a-release.apk -Force
+          Get-ChildItem dist\*.apk | Select-Object Name, Length | Format-Table -AutoSize
+
+      - name: Upload APK files
         uses: actions/upload-artifact@v4
         with:
-          name: app-release
-          path: build\app\outputs\flutter-apk\app-release.apk
+          name: android-release-apks
+          path: dist/*.apk
+          if-no-files-found: error
+          compression-level: 0
