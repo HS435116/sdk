@@ -11,13 +11,12 @@ android {
     ndkVersion = "25.1.8937393"
 
     compileOptions {
-
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
 
-    kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_17.toString()
+    kotlin {
+        jvmToolchain(17)
     }
 
     defaultConfig {
@@ -62,14 +61,13 @@ android {
         }
     }
 
-    packagingOptions {
+    packaging {
         // 禁用符号裁剪以避免触发 NDK 依赖
-        jniLibs.keepDebugSymbols += setOf("**/*.so")
-        pickFirsts += setOf("lib/**/libc++_shared.so")
+        jniLibs.keepDebugSymbols.add("**/*.so")
+        jniLibs.pickFirsts.add("lib/**/libc++_shared.so")
         // 使用旧版打包以兼容 Android 4.4
-        useLegacyPackaging = true
+        isLegacyPackaging = true
     }
-
 
 }
 

@@ -1,4 +1,4 @@
-APK 打包命令：
+APK 打包命令来构建发布版 APK：
 D:\Users\Administrator\sdk\flutter\bin\flutter.bat build apk --release
 
 有冲突的处理，先拉再推：
@@ -17,6 +17,7 @@ git push origin main
 本机调试
 flutter pub get
 flutter run -d windows（PC 调试）
+
 
 
 清理签名不一致

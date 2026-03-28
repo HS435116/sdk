@@ -2,6 +2,12 @@
     android:installLocation="auto">
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-feature android:name="android.hardware.opengles.version" android:required="true" android:version="0x00020000"/>
+    <supports-screens
+        android:smallScreens="true"
+        android:normalScreens="true"
+        android:largeScreens="true"
+        android:xlargeScreens="true"
+        android:anyDensity="true"/>
     <application
         android:label="晨曦影视"
         android:usesCleartextTraffic="true"
@@ -43,10 +49,5 @@
          https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
 
          In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
-    <queries>
-        <intent>
-            <action android:name="android.intent.action.PROCESS_TEXT"/>
-            <data android:mimeType="text/plain"/>
-        </intent>
-    </queries>
+    <!-- Removed queries for Android 4.4 compatibility -->
 </manifest>
