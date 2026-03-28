@@ -66,7 +66,7 @@ android {
         jniLibs.keepDebugSymbols.add("**/*.so")
         jniLibs.pickFirsts.add("lib/**/libc++_shared.so")
         // 使用旧版打包以兼容 Android 4.4
-        isLegacyPackaging = true
+        jniLibs.useLegacyPackaging = true
     }
 
 }

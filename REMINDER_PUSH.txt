@@ -1,0 +1,49 @@
+# 推送 APK 到 Mediapad 10 Link+ 的完整命令
+
+## 前提条件
+1. 确保设备已通过 USB 连接。
+2. 在设备上启用 USB 调试（设置 -> 开发者选项 -> USB 调试）。
+3. 确保电脑上已安装 ADB 并配置了环境变量。
+
+## 构建 APK
+运行以下命令构建发布版 APK：
+```
+flutter build apk --release
+```
+或者使用脚本：
+```
+build_apk.bat
+```
+
+## 推送 APK
+使用以下命令安装 APK：
+```
+adb install -r build\app\outputs\flutter-apk\app-armeabi-v7a-release.apk
+```
+或者使用脚本：
+```
+push_apk.bat
+```
+
+## 验证安装
+安装后，在设备上启动应用。如果遇到任何解析错误，请检查：
+- 设备存储空间是否充足。
+- Android 版本是否为 4.4 或更高。
+- 设备架构是否为 ARMv7（Mediapad 10 Link+ 使用 ARMv7）。
+
+## 调试
+如需查看安装日志，请运行：
+```
+adb logcat | grep -i "package"
+```
+
+## 注意事项
+- 此 APK 已针对 Android 4.4 和 Mediapad 10 Link+ 进行了兼容性优化。
+- 如果仍然失败，请尝试卸载旧版本后再安装。
+
+## 快速命令（复制并执行）
+```
+flutter build apk --release && adb install -r build\app\outputs\flutter-apk\app-armeabi-v7a-release.apk
+```
+
+完成！

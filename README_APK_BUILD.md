@@ -36,8 +36,9 @@ build_apk.bat
 
 构建成功后，APK 将位于：
 ```
-build\app\outputs\flutter-apk\app-release.apk
+build\app\outputs\flutter-apk\app-armeabi-v7a-release.apk
 ```
+（针对 ARMv7 设备，如 Mediapad 10 Link+）
 
 ## 推送 APK 到设备
 

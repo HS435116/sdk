@@ -1,6 +1,6 @@
 @echo off
 echo Pushing APK to connected Android device...
-adb install -r build\app\outputs\flutter-apk\app-release.apk
+adb install -r build\app\outputs\flutter-apk\app-armeabi-v7a-release.apk
 if %errorlevel% equ 0 (
     echo APK pushed successfully.
 ) else (
