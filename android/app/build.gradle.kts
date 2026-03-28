@@ -8,6 +8,7 @@ plugins {
 android {
     namespace = "com.example.sdk"
     compileSdk = flutter.compileSdkVersion
+    ndkVersion = "25.1.8937393"
 
     compileOptions {
 
@@ -24,10 +25,33 @@ android {
         applicationId = "com.example.sdk"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = flutter.minSdkVersion
+        minSdk = 19 // 确保兼容 Android 4.4 (KitKat)
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        multiDexEnabled = true
+        ndk {
+            abiFilters.addAll(listOf("armeabi-v7a", "arm64-v8a", "x86", "x86_64"))
+        }
+    }
+
+    signingConfigs {
+        getByName("debug") {
+            enableV1Signing = true
+            enableV2Signing = false
+            enableV3Signing = false
+            enableV4Signing = false
+        }
+        create("release") {
+            enableV1Signing = true
+            enableV2Signing = false
+            enableV3Signing = false
+            enableV4Signing = false
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
@@ -38,12 +62,12 @@ android {
         }
     }
 
-    packaging {
-        jniLibs {
-            // 禁用符号裁剪以避免触发 NDK 依赖
-            keepDebugSymbols += setOf("**/*.so")
-            pickFirsts += setOf("lib/**/libc++_shared.so")
-        }
+    packagingOptions {
+        // 禁用符号裁剪以避免触发 NDK 依赖
+        jniLibs.keepDebugSymbols += setOf("**/*.so")
+        pickFirsts += setOf("lib/**/libc++_shared.so")
+        // 使用旧版打包以兼容 Android 4.4
+        useLegacyPackaging = true
     }
 
 
